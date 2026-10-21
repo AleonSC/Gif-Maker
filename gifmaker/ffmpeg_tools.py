@@ -1,11 +1,12 @@
 """Thin wrappers around ffmpeg for probing videos, grabbing frames and making GIFs."""
 
-import base64
 import os
+import queue
 import re
 import shutil
 import subprocess
 import sys
+import threading
 
 # Stop ffmpeg from flashing a console window when running as a windowed .exe.
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
@@ -79,25 +80,75 @@ def probe(ffmpeg, path):
     return duration, width, height, fps
 
 
-def grab_frame(ffmpeg, path, seconds, max_w, max_h):
-    """Return a PNG of the frame at `seconds`, base64-encoded for tk.PhotoImage."""
+def grab_frame(ffmpeg, path, seconds, max_w, max_h, fast=False):
+    """Return the frame at `seconds` as PPM bytes for tk.PhotoImage, or None.
+
+    fast=True jumps to the nearest keyframe at or before `seconds` instead of
+    decoding up to the exact frame: much quicker, but only approximate.
+    """
     vf = (
         f"scale='min({max_w},iw)':'min({max_h},ih)'"
         ":force_original_aspect_ratio=decrease"
     )
-    proc = subprocess.run(
-        [
-            ffmpeg, "-hide_banner", "-loglevel", "error",
-            "-ss", f"{seconds:.3f}", "-i", path,
-            "-frames:v", "1", "-vf", vf,
-            "-f", "image2pipe", "-vcodec", "png", "-",
-        ],
-        capture_output=True,
-        creationflags=_NO_WINDOW,
-    )
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error"]
+    if fast:
+        cmd += ["-noaccurate_seek", "-skip_frame", "nokey"]
+        vf += ":flags=fast_bilinear"
+    cmd += [
+        "-ss", f"{seconds:.3f}", "-i", path, "-an", "-sn",
+        "-frames:v", "1", "-vf", vf,
+        "-f", "image2pipe", "-vcodec", "ppm", "-",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, creationflags=_NO_WINDOW)
     if proc.returncode != 0 or not proc.stdout:
         return None
-    return base64.b64encode(proc.stdout).decode("ascii")
+    return proc.stdout
+
+
+def iter_keyframes(ffmpeg, path, width, height, min_gap, should_stop):
+    """Yield (seconds, rgb24 bytes) for keyframes at least min_gap seconds apart.
+
+    Only keyframes are decoded, so this is fast even for long videos. Used to
+    build the thumbnail cache that makes scrubbing instant.
+    """
+    vf = (
+        f"select='isnan(prev_selected_t)+gte(t-prev_selected_t,{min_gap:.3f})',"
+        f"scale={width}:{height}:flags=fast_bilinear,showinfo"
+    )
+    proc = subprocess.Popen(
+        [
+            ffmpeg, "-hide_banner", "-nostats", "-skip_frame", "nokey",
+            "-i", path, "-an", "-sn", "-dn", "-vf", vf, "-vsync", "passthrough",
+            "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        creationflags=_NO_WINDOW,
+    )
+    times = queue.Queue()
+
+    def read_times():
+        for line in proc.stderr:
+            m = re.search(rb"pts_time:\s*(-?[\d.]+)", line)
+            if m and b"showinfo" in line:
+                times.put(float(m.group(1)))
+
+    threading.Thread(target=read_times, daemon=True).start()
+    frame_size = width * height * 3
+    try:
+        while not should_stop():
+            buf = proc.stdout.read(frame_size)
+            if len(buf) < frame_size:
+                break
+            try:
+                t = times.get(timeout=5)
+            except queue.Empty:
+                break
+            yield t, buf
+    finally:
+        proc.kill()
+        proc.wait()
 
 
 def build_gif_command(ffmpeg, src, dst, start, end, fps, width, speed=1.0,

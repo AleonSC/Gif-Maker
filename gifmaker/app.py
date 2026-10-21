@@ -1,5 +1,6 @@
 """GifMaker: pick a section of a video and turn it into a GIF."""
 
+import bisect
 import os
 import queue
 import subprocess
@@ -7,13 +8,21 @@ import sys
 import threading
 import time
 import tkinter as tk
+from operator import itemgetter
 from tkinter import filedialog, messagebox, ttk
 
 from . import ffmpeg_tools as ff
 
+try:  # Drag and drop from Explorer needs the tkdnd extension; run without it if missing.
+    from tkinterdnd2 import COPY, DND_FILES, TkinterDnD
+except ImportError:
+    TkinterDnD = None
+
 PREVIEW_W, PREVIEW_H = 720, 405
 MAX_GIF_SECONDS = 30
 MAX_PLAYBACK_FPS = 30
+MAX_THUMBNAILS = 300  # cached keyframes for instant scrubbing (~65 MB at most)
+SCRUB_SETTLE_MS = 120  # fetch the exact frame once the slider rests this long
 VIDEO_TYPES = [
     ("Video files", "*.mp4 *.mkv *.mov *.avi *.webm *.wmv *.flv *.m4v *.mpg *.mpeg *.ts *.gif"),
     ("All files", "*.*"),
@@ -33,10 +42,16 @@ class GifMakerApp:
         self.video_fps = 0.0
         self.video_width = 0
         self.video_height = 0
+        self.video_token = 0  # bumped per opened video so stale work is ignored
         self.preview_image = None
-        self.preview_job = None
-        self.preview_seq = 0
-        self.preview_queue = queue.Queue()
+        self.shown_t = None  # video time of the frame currently in the preview
+        self.thumbs = []  # (seconds, rgb24 bytes), filled in by a background thread
+        self.thumbs_done = False
+        self.thumb_size = (0, 0)
+        self.frame_busy = False
+        self.frame_want = None
+        self.frame_queue = queue.Queue()
+        self.settle_job = None
         self.busy = False
         self.cancel_requested = False
 
@@ -59,7 +74,8 @@ class GifMakerApp:
         self.status = tk.StringVar(value="Open a video to get started.")
 
         self._build_ui()
-        self._poll_preview_queue()
+        self._enable_drop()
+        self._poll_frame_queue()
         self._poll_play_queue()
 
     # ---------------------------------------------------------------- UI
@@ -79,14 +95,15 @@ class GifMakerApp:
         self.canvas.pack(pady=8)
         self.canvas_text = self.canvas.create_text(
             PREVIEW_W // 2, PREVIEW_H // 2, fill="#888",
-            text="Open a video, or drag the slider to scrub through it.")
+            text="Open a video, or drag and drop one here.")
         self.canvas_img = self.canvas.create_image(PREVIEW_W // 2, PREVIEW_H // 2)
 
         scrub = ttk.Frame(main)
         scrub.pack(fill="x")
         self.slider = ttk.Scale(scrub, from_=0, to=1, variable=self.position,
-                                command=lambda _v: self._on_scrub())
+                                command=lambda _v: self._on_drag())
         self.slider.pack(side="left", fill="x", expand=True)
+        self.slider.bind("<ButtonRelease-1>", self._settle)
         self.pos_label = ttk.Label(scrub, text="0:00.000", width=12, anchor="e")
         self.pos_label.pack(side="left", padx=(8, 0))
 
@@ -151,6 +168,44 @@ class GifMakerApp:
         self.root.bind("<bracketleft>", lambda e: self._key_set(e, self.set_start))
         self.root.bind("<bracketright>", lambda e: self._key_set(e, self.set_end))
 
+    # ------------------------------------------------------ drag & drop
+    def _enable_drop(self):
+        if not hasattr(self.root, "drop_target_register"):
+            return
+
+        def register(widget):
+            widget.drop_target_register(DND_FILES)
+            widget.dnd_bind("<<DropEnter>>", self._on_drop_enter)
+            widget.dnd_bind("<<DropLeave>>", self._on_drop_leave)
+            widget.dnd_bind("<<Drop>>", self._on_drop)
+            for child in widget.winfo_children():
+                register(child)
+
+        try:
+            register(self.root)
+        except tk.TclError:
+            pass
+
+    def _on_drop_enter(self, event):
+        self.canvas.config(highlightthickness=3, highlightbackground="#3a7bd5")
+        return event.action
+
+    def _on_drop_leave(self, event):
+        self.canvas.config(highlightthickness=0)
+        return event.action
+
+    def _on_drop(self, event):
+        self.canvas.config(highlightthickness=0)
+        files = [f for f in self.root.tk.splitlist(event.data) if os.path.isfile(f)]
+        if not files:
+            return event.action
+        if self.busy:
+            self.status.set("Wait for the GIF to finish before opening another video.")
+        else:
+            # Open after the drop completes so Explorer isn't left waiting on dialogs.
+            self.root.after(10, lambda: self.open_video(files[0]))
+        return COPY
+
     # ----------------------------------------------------------- loading
     def open_video(self, path=None):
         if self.busy:
@@ -172,52 +227,118 @@ class GifMakerApp:
         self.file_label.config(text=f"{os.path.basename(path)}   ({ff.format_time(duration)}, "
                                     f"{w}x{_h}, {self.video_fps:g} fps)", foreground="#000")
         self.slider.config(to=max(duration, 0.001))
-        self.position.set(0.0)
+        self.video_token += 1
+        self.shown_t = None
+        self._build_thumbs()
         self.start_text.set(ff.format_time(0))
         self.end_text.set(ff.format_time(min(duration, 3.0)))
         if w and w < self.width.get():
             self.width.set(0)
         self.status.set("Scrub to the part you want, set Start and End, then click Make GIF.")
-        self._request_preview()
+        self._seek(0.0)
 
     # ----------------------------------------------------------- preview
-    def _on_scrub(self):
-        self.stop_playback()
-        self.pos_label.config(text=ff.format_time(self.position.get()))
-        if self.preview_job:
-            self.root.after_cancel(self.preview_job)
-        self.preview_job = self.root.after(60, self._request_preview)
-
-    def _request_preview(self):
-        self.preview_job = None
-        if not self.video_path:
-            return
-        self.preview_seq += 1
-        seq, t, path = self.preview_seq, self.position.get(), self.video_path
-        self.pos_label.config(text=ff.format_time(t))
+    # While dragging, the preview shows cached keyframe thumbnails instantly (or a
+    # quick keyframe grab where the cache hasn't reached yet), then the exact frame
+    # once the slider rests. Only one ffmpeg frame grab runs at a time; the newest
+    # request wins, and whichever image is closest to the slider is shown.
+    def _build_thumbs(self):
+        token = self.video_token
+        thumbs = self.thumbs = []
+        self.thumbs_done = False
+        pw, ph = ff.fit_size(self.video_width, self.video_height, PREVIEW_W, PREVIEW_H)
+        w, h = self.thumb_size = (max(2, pw // 2), max(2, ph // 2))
+        gap = self.duration / MAX_THUMBNAILS
+        path = self.video_path
 
         def work():
-            data = ff.grab_frame(self.ffmpeg, path, t, PREVIEW_W, PREVIEW_H)
-            self.preview_queue.put((seq, data))
+            for item in ff.iter_keyframes(self.ffmpeg, path, w, h, gap,
+                                          lambda: token != self.video_token):
+                thumbs.append(item)
+            if token == self.video_token:
+                self.thumbs_done = True
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _poll_preview_queue(self):
-        latest = None
+    def _on_drag(self):
+        if not self.video_path:
+            return
+        self.stop_playback()
+        t = self.position.get()
+        self.pos_label.config(text=ff.format_time(t))
+        if not self._show_thumb(t):
+            self._request_frame(t, exact=False)
+        if self.settle_job:
+            self.root.after_cancel(self.settle_job)
+        self.settle_job = self.root.after(SCRUB_SETTLE_MS, self._settle)
+
+    def _settle(self, _event=None):
+        if self.settle_job:
+            self.root.after_cancel(self.settle_job)
+            self.settle_job = None
+        if self.video_path and not self.playing:
+            self._request_frame(self.position.get(), exact=True)
+
+    def _seek(self, t):
+        self.stop_playback()
+        t = min(self.duration, max(0.0, t))
+        self.position.set(t)
+        self.pos_label.config(text=ff.format_time(t))
+        self._settle()
+
+    def _show_thumb(self, t):
+        """Show the cached keyframe for time t. Returns False if it isn't cached yet."""
+        thumbs = self.thumbs
+        i = bisect.bisect_right(thumbs, t, key=itemgetter(0)) - 1
+        if i < 0 or (not self.thumbs_done and thumbs[-1][0] < t):
+            return False
+        thumb_t, data = thumbs[i]
+        if self.shown_t is None or abs(thumb_t - t) < abs(self.shown_t - t):
+            w, h = self.thumb_size
+            img = tk.PhotoImage(data=b"P6 %d %d 255\n" % (w, h) + data, format="ppm")
+            self._display(img.zoom(2), thumb_t)
+        return True
+
+    def _display(self, img, t):
+        self.preview_image = img
+        self.shown_t = t
+        self.canvas.itemconfig(self.canvas_img, image=img)
+        self.canvas.itemconfig(self.canvas_text, text="")
+
+    def _request_frame(self, t, exact):
+        self.frame_want = (self.video_token, self.video_path, t, exact)
+        if not self.frame_busy:
+            self._launch_frame()
+
+    def _launch_frame(self):
+        token, path, t, exact = self.frame_want
+        self.frame_want = None
+        self.frame_busy = True
+
+        def work():
+            data = ff.grab_frame(self.ffmpeg, path, t, PREVIEW_W, PREVIEW_H, fast=not exact)
+            self.frame_queue.put((token, t, data))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _poll_frame_queue(self):
         try:
             while True:
-                latest = self.preview_queue.get_nowait()
+                token, t, data = self.frame_queue.get_nowait()
+                self.frame_busy = False
+                if not data or token != self.video_token or self.playing:
+                    continue
+                pos = self.position.get()
+                if self.shown_t is None or abs(t - pos) <= abs(self.shown_t - pos):
+                    try:
+                        self._display(tk.PhotoImage(data=data, format="ppm"), t)
+                    except tk.TclError:
+                        pass
         except queue.Empty:
             pass
-        if latest and latest[0] == self.preview_seq and latest[1]:
-            try:
-                self.preview_image = tk.PhotoImage(data=latest[1], format="png")
-                if not self.playing:
-                    self.canvas.itemconfig(self.canvas_img, image=self.preview_image)
-                self.canvas.itemconfig(self.canvas_text, text="")
-            except tk.TclError:
-                pass
-        self.root.after(40, self._poll_preview_queue)
+        if self.frame_want and not self.frame_busy:
+            self._launch_frame()
+        self.root.after(15, self._poll_frame_queue)
 
     # ---------------------------------------------------------- playback
     def toggle_play(self):
@@ -302,6 +423,7 @@ class GifMakerApp:
             self.play_proc = None
         self.play_btn.config(text="\u25B6 Play")
         self.clip_btn.config(text="\u21BB Play clip")
+        self.shown_t = None  # the preview is showing a playback frame
 
     def _poll_play_queue(self):
         frame = None
@@ -331,7 +453,7 @@ class GifMakerApp:
                 self.toggle_play_clip()
             else:
                 self.stop_playback()
-                self._request_preview()
+                self._settle()
         self.root.after(10, self._poll_play_queue)
 
     # ---------------------------------------------------------- snapshot
@@ -372,16 +494,14 @@ class GifMakerApp:
             delta = -1.0 / self.video_fps
         elif delta == "+f":
             delta = 1.0 / self.video_fps
-        self.position.set(min(self.duration, max(0.0, self.position.get() + delta)))
-        self._on_scrub()
+        self._seek(self.position.get() + delta)
 
     def goto(self, var):
         try:
             t = ff.parse_time(var.get())
         except ValueError:
             return
-        self.position.set(min(self.duration, t))
-        self._on_scrub()
+        self._seek(t)
 
     def _key_step(self, event, delta):
         if not isinstance(event.widget, _NO_SHORTCUT_WIDGETS):
@@ -530,7 +650,14 @@ def main():
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
         except Exception:
             pass
-    root = tk.Tk()
+    root = None
+    if TkinterDnD is not None:
+        try:
+            root = TkinterDnD.Tk()
+        except (RuntimeError, tk.TclError):
+            root = None
+    if root is None:
+        root = tk.Tk()
     try:
         ttk.Style(root).theme_use("vista" if sys.platform == "win32" else "clam")
     except tk.TclError:

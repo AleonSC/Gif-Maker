@@ -38,15 +38,24 @@ jobs:
                           "-pix_fmt", "yuv420p", src], check=True)
           print(ff.probe(exe, src))
           assert ff.grab_frame(exe, src, 1.0, 320, 180)
+          assert ff.grab_frame(exe, src, 1.0, 320, 180, fast=True)
+          thumbs = list(ff.iter_keyframes(exe, src, 160, 90, 0.5, lambda: False))
+          assert thumbs and all(len(b) == 160 * 90 * 3 for _, b in thumbs), len(thumbs)
           err = ff.make_gif(ff.build_gif_command(exe, src, dst, 1.0, 3.0, 10, 320), 2.0)
           assert err is None, err
           assert os.path.getsize(dst) > 1000
           print("ok", os.path.getsize(dst))
 
+      - name: Check drag and drop support loads
+        run: >
+          python -c "from tkinterdnd2 import TkinterDnD, DND_FILES;
+          r = TkinterDnD.Tk(); r.drop_target_register(DND_FILES);
+          print('tkdnd', r.tk.call('package', 'require', 'tkdnd')); r.destroy()"
+
       - name: Build exe
         run: >
           python -m PyInstaller --noconfirm --onefile --windowed --name GifMaker
-          --collect-all imageio_ffmpeg run_gifmaker.py
+          --collect-all imageio_ffmpeg --collect-all tkinterdnd2 run_gifmaker.py
 
       - uses: actions/upload-artifact@v4
         with:
