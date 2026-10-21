@@ -94,14 +94,18 @@ def grab_frame(ffmpeg, path, seconds, max_w, max_h, fast=False):
     if fast:
         cmd += ["-noaccurate_seek", "-skip_frame", "nokey"]
         vf += ":flags=fast_bilinear"
+    cmd += ["-ss", f"{seconds:.3f}"]
+    if fast:
+        # Without this ffmpeg drops a keyframe that lies before the seek point.
+        cmd += ["-copyts"]
     cmd += [
-        "-ss", f"{seconds:.3f}", "-i", path, "-an", "-sn",
+        "-i", path, "-an", "-sn",
         "-frames:v", "1", "-vf", vf,
         "-f", "image2pipe", "-vcodec", "ppm", "-",
     ]
     proc = subprocess.run(cmd, capture_output=True, creationflags=_NO_WINDOW)
     if proc.returncode != 0 or not proc.stdout:
-        return None
+        return grab_frame(ffmpeg, path, seconds, max_w, max_h) if fast else None
     return proc.stdout
 
 
