@@ -164,3 +164,51 @@ def make_gif(cmd, output_seconds, on_progress=None, should_cancel=None):
     if on_progress:
         on_progress(1.0)
     return None
+
+
+def fit_size(width, height, max_w, max_h):
+    """Scale (width, height) down to fit in max_w x max_h, keeping even sizes."""
+    if width <= 0 or height <= 0:
+        return max_w, max_h
+    scale = min(1.0, max_w / width, max_h / height)
+    w = max(2, int(width * scale) // 2 * 2)
+    h = max(2, int(height * scale) // 2 * 2)
+    return w, h
+
+
+def open_raw_stream(ffmpeg, path, start, width, height, fps, duration=None):
+    """Start ffmpeg decoding the video as raw RGB frames of width x height on stdout."""
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", f"{start:.3f}"]
+    if duration is not None:
+        cmd += ["-t", f"{duration:.3f}"]
+    cmd += [
+        "-i", path, "-an", "-sn",
+        "-vf", f"fps={fps},scale={width}:{height}:flags=bilinear",
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+    ]
+    return subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        creationflags=_NO_WINDOW,
+    )
+
+
+def save_frame(ffmpeg, path, seconds, dst):
+    """Save the full-resolution frame at `seconds` to dst (format from its extension).
+
+    Returns None on success or an error message.
+    """
+    cmd = [
+        ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+        "-ss", f"{seconds:.3f}", "-i", path, "-frames:v", "1", "-update", "1",
+    ]
+    if os.path.splitext(dst)[1].lower() in (".jpg", ".jpeg"):
+        cmd += ["-q:v", "2"]
+    cmd.append(dst)
+    proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+                          creationflags=_NO_WINDOW)
+    if proc.returncode != 0 or not os.path.exists(dst):
+        return proc.stderr.strip() or "ffmpeg could not save the frame."
+    return None

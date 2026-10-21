@@ -5,16 +5,21 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from . import ffmpeg_tools as ff
 
 PREVIEW_W, PREVIEW_H = 720, 405
+MAX_GIF_SECONDS = 30
+MAX_PLAYBACK_FPS = 30
 VIDEO_TYPES = [
     ("Video files", "*.mp4 *.mkv *.mov *.avi *.webm *.wmv *.flv *.m4v *.mpg *.mpeg *.ts *.gif"),
     ("All files", "*.*"),
 ]
+# Keyboard shortcuts are ignored while one of these has focus.
+_NO_SHORTCUT_WIDGETS = (ttk.Entry, tk.Entry, ttk.Combobox, ttk.Spinbox, ttk.Button, ttk.Checkbutton)
 
 
 class GifMakerApp:
@@ -27,12 +32,21 @@ class GifMakerApp:
         self.duration = 0.0
         self.video_fps = 0.0
         self.video_width = 0
+        self.video_height = 0
         self.preview_image = None
         self.preview_job = None
         self.preview_seq = 0
         self.preview_queue = queue.Queue()
         self.busy = False
         self.cancel_requested = False
+
+        # Playback: a worker thread reads raw frames from ffmpeg and queues them.
+        self.playing = False
+        self.play_clip = False
+        self.play_token = 0
+        self.play_proc = None
+        self.play_queue = queue.Queue()
+        self.play_image = None
 
         self.position = tk.DoubleVar(value=0.0)
         self.start_text = tk.StringVar(value="0:00.000")
@@ -46,6 +60,7 @@ class GifMakerApp:
 
         self._build_ui()
         self._poll_preview_queue()
+        self._poll_play_queue()
 
     # ---------------------------------------------------------------- UI
     def _build_ui(self):
@@ -77,9 +92,16 @@ class GifMakerApp:
 
         step = ttk.Frame(main)
         step.pack(pady=4)
+        self.play_btn = ttk.Button(step, text="\u25B6 Play", width=9, command=self.toggle_play)
+        self.play_btn.pack(side="left", padx=2)
+        self.clip_btn = ttk.Button(step, text="\u21BB Play clip", width=11,
+                                   command=self.toggle_play_clip)
+        self.clip_btn.pack(side="left", padx=(2, 12))
         for label, delta in (("<< 1s", -1), ("< frame", "-f"), ("frame >", "+f"), ("1s >>", 1)):
             ttk.Button(step, text=label, width=9,
                        command=lambda d=delta: self.step(d)).pack(side="left", padx=2)
+        ttk.Button(step, text="Save snapshot...",
+                   command=self.save_snapshot).pack(side="left", padx=(12, 2))
 
         rng = ttk.LabelFrame(main, text="Clip range  (seconds or m:ss.sss)", padding=6)
         rng.pack(fill="x", pady=6)
@@ -93,9 +115,9 @@ class GifMakerApp:
         ttk.Button(rng, text="Set to current", command=self.set_end).grid(row=0, column=6, **pad)
         ttk.Button(rng, text="Go", width=4,
                    command=lambda: self.goto(self.end_text)).grid(row=0, column=7, **pad)
-        self.length_label = ttk.Label(rng, text="Length: 0.00s")
-        self.length_label.grid(row=0, column=8, **pad)
-        for var in (self.start_text, self.end_text):
+        self.length_label = ttk.Label(rng, text="GIF length: 0.00s")
+        self.length_label.grid(row=1, column=0, columnspan=9, sticky="w", **pad)
+        for var in (self.start_text, self.end_text, self.speed):
             var.trace_add("write", lambda *_: self._update_length())
 
         opts = ttk.LabelFrame(main, text="GIF options", padding=6)
@@ -123,6 +145,7 @@ class GifMakerApp:
         self.progress.pack(side="left", fill="x", expand=True, padx=6)
         ttk.Label(main, textvariable=self.status, foreground="#444").pack(fill="x", pady=(6, 0))
 
+        self.root.bind("<space>", lambda e: self._key_set(e, self.toggle_play))
         self.root.bind("<Left>", lambda e: self._key_step(e, "-f"))
         self.root.bind("<Right>", lambda e: self._key_step(e, "+f"))
         self.root.bind("<bracketleft>", lambda e: self._key_set(e, self.set_start))
@@ -132,6 +155,7 @@ class GifMakerApp:
     def open_video(self, path=None):
         if self.busy:
             return
+        self.stop_playback()
         path = path or filedialog.askopenfilename(title="Open video", filetypes=VIDEO_TYPES)
         if not path:
             return
@@ -144,6 +168,7 @@ class GifMakerApp:
         self.duration = duration
         self.video_fps = fps or 30.0
         self.video_width = w
+        self.video_height = _h
         self.file_label.config(text=f"{os.path.basename(path)}   ({ff.format_time(duration)}, "
                                     f"{w}x{_h}, {self.video_fps:g} fps)", foreground="#000")
         self.slider.config(to=max(duration, 0.001))
@@ -157,6 +182,7 @@ class GifMakerApp:
 
     # ----------------------------------------------------------- preview
     def _on_scrub(self):
+        self.stop_playback()
         self.pos_label.config(text=ff.format_time(self.position.get()))
         if self.preview_job:
             self.root.after_cancel(self.preview_job)
@@ -186,11 +212,158 @@ class GifMakerApp:
         if latest and latest[0] == self.preview_seq and latest[1]:
             try:
                 self.preview_image = tk.PhotoImage(data=latest[1], format="png")
-                self.canvas.itemconfig(self.canvas_img, image=self.preview_image)
+                if not self.playing:
+                    self.canvas.itemconfig(self.canvas_img, image=self.preview_image)
                 self.canvas.itemconfig(self.canvas_text, text="")
             except tk.TclError:
                 pass
         self.root.after(40, self._poll_preview_queue)
+
+    # ---------------------------------------------------------- playback
+    def toggle_play(self):
+        if self.playing and not self.play_clip:
+            self.stop_playback()
+            return
+        if not self.video_path:
+            return
+        self.stop_playback()
+        start = self.position.get()
+        if start >= self.duration - 0.05:
+            start = 0.0
+        self._start_playback(start, None, clip=False)
+
+    def toggle_play_clip(self):
+        if self.playing and self.play_clip:
+            self.stop_playback()
+            return
+        if not self.video_path:
+            return
+        try:
+            start, end = self._range()
+        except ValueError:
+            messagebox.showerror("GifMaker", "Start and End must be times like 12.5 or 1:02.25")
+            return
+        end = min(end, self.duration)
+        if end <= start:
+            messagebox.showerror("GifMaker", "End must be after Start.")
+            return
+        self.stop_playback()
+        self._start_playback(start, end, clip=True)
+
+    def _start_playback(self, start, end, clip):
+        self.playing = True
+        self.play_clip = clip
+        self.play_token += 1
+        token = self.play_token
+        w, h = ff.fit_size(self.video_width, self.video_height, PREVIEW_W, PREVIEW_H)
+        fps = min(self.video_fps, MAX_PLAYBACK_FPS)
+        duration = None if end is None else end - start
+        proc = ff.open_raw_stream(self.ffmpeg, self.video_path, start, w, h, fps, duration)
+        self.play_proc = proc
+        if self.play_image is None:
+            self.play_image = tk.PhotoImage()
+        self.canvas.itemconfig(self.canvas_img, image=self.play_image)
+        self.canvas.itemconfig(self.canvas_text, text="")
+        if clip:
+            self.play_btn.config(text="\u25B6 Play")
+            self.clip_btn.config(text="\u25A0 Stop clip")
+        else:
+            self.play_btn.config(text="\u275A\u275A Pause")
+            self.clip_btn.config(text="\u21BB Play clip")
+        threading.Thread(target=self._play_worker, args=(token, proc, start, w, h, fps),
+                         daemon=True).start()
+
+    def _play_worker(self, token, proc, start, w, h, fps):
+        frame_size = w * h * 3
+        header = b"P6 %d %d 255\n" % (w, h)
+        t0 = time.monotonic()
+        i = 0
+        while token == self.play_token:
+            buf = proc.stdout.read(frame_size)
+            if len(buf) < frame_size:
+                break
+            delay = t0 + i / fps - time.monotonic()
+            if delay > 0:
+                time.sleep(delay)
+            if delay > -0.1:  # drop frames we are too late for
+                self.play_queue.put((token, start + i / fps, header + buf))
+            i += 1
+        proc.kill()
+        proc.wait()
+        self.play_queue.put((token, None, None))
+
+    def stop_playback(self):
+        if not self.playing:
+            return
+        self.playing = False
+        self.play_token += 1
+        if self.play_proc:
+            self.play_proc.kill()
+            self.play_proc = None
+        self.play_btn.config(text="\u25B6 Play")
+        self.clip_btn.config(text="\u21BB Play clip")
+
+    def _poll_play_queue(self):
+        frame = None
+        finished = False
+        try:
+            while True:
+                token, t, data = self.play_queue.get_nowait()
+                if token != self.play_token:
+                    continue
+                if data is None:
+                    finished = True
+                else:
+                    frame = (t, data)
+        except queue.Empty:
+            pass
+        if frame and self.playing:
+            t, data = frame
+            try:
+                self.play_image.configure(data=data, format="ppm")
+            except tk.TclError:
+                pass
+            self.position.set(min(t, self.duration))
+            self.pos_label.config(text=ff.format_time(t))
+        if finished and self.playing:
+            if self.play_clip:
+                self.toggle_play_clip()  # stop, then start the loop again
+                self.toggle_play_clip()
+            else:
+                self.stop_playback()
+                self._request_preview()
+        self.root.after(10, self._poll_play_queue)
+
+    # ---------------------------------------------------------- snapshot
+    def save_snapshot(self):
+        if not self.video_path:
+            messagebox.showinfo("GifMaker", "Open a video first.")
+            return
+        self.stop_playback()
+        t = self.position.get()
+        base = os.path.splitext(os.path.basename(self.video_path))[0]
+        dst = filedialog.asksaveasfilename(
+            title="Save snapshot as", defaultextension=".png",
+            initialfile=f"{base}_{t:.2f}s.png",
+            initialdir=os.path.dirname(self.video_path),
+            filetypes=[("PNG image", "*.png"), ("JPEG image", "*.jpg *.jpeg")])
+        if not dst:
+            return
+        self.status.set(f"Saving snapshot at {ff.format_time(t)}...")
+        path = self.video_path
+
+        def work():
+            err = ff.save_frame(self.ffmpeg, path, t, dst)
+            self.root.after(0, lambda: self._snapshot_done(err, dst))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _snapshot_done(self, err, dst):
+        if err:
+            self.status.set("Snapshot failed.")
+            messagebox.showerror("Snapshot failed", err[-1500:])
+        else:
+            self.status.set(f"Saved snapshot {dst}")
 
     def step(self, delta):
         if not self.video_path:
@@ -211,11 +384,11 @@ class GifMakerApp:
         self._on_scrub()
 
     def _key_step(self, event, delta):
-        if not isinstance(event.widget, (ttk.Entry, tk.Entry, ttk.Combobox, ttk.Spinbox)):
+        if not isinstance(event.widget, _NO_SHORTCUT_WIDGETS):
             self.step(delta)
 
     def _key_set(self, event, fn):
-        if not isinstance(event.widget, (ttk.Entry, tk.Entry, ttk.Combobox, ttk.Spinbox)):
+        if not isinstance(event.widget, _NO_SHORTCUT_WIDGETS):
             fn()
 
     # ------------------------------------------------------------- range
@@ -233,9 +406,20 @@ class GifMakerApp:
     def _update_length(self):
         try:
             start, end = self._range()
-            self.length_label.config(text=f"Length: {end - start:.2f}s")
-        except ValueError:
-            self.length_label.config(text="Length: ?")
+            speed = float(self.speed.get())
+            if speed <= 0:
+                raise ValueError
+        except (ValueError, tk.TclError):
+            self.length_label.config(text="GIF length: ?", foreground="")
+            return
+        gif_len = (end - start) / speed
+        text = f"GIF length: {gif_len:.2f}s  (max {MAX_GIF_SECONDS}s)"
+        if speed != 1.0:
+            text = f"Clip {end - start:.2f}s at {speed:g}x speed \u2192 " + text
+        over = gif_len > MAX_GIF_SECONDS
+        if over:
+            text += "  \u2013 too long, shorten the clip or raise the speed"
+        self.length_label.config(text=text, foreground="#c00" if over else "")
 
     # -------------------------------------------------------------- make
     def make_gif(self):
@@ -266,10 +450,14 @@ class GifMakerApp:
                 "GifMaker",
                 "Options out of range:\nFPS 1-50, Width 0 or more, Speed 0.1-10, Colors 2-256.")
             return
-        if end - start > 60 and not messagebox.askyesno(
-                "Long clip", f"This clip is {end - start:.0f} seconds long, which can make a "
-                             "very large GIF. Continue?"):
+        if (end - start) / speed > MAX_GIF_SECONDS:
+            messagebox.showerror(
+                "GIF too long",
+                f"GIFs can be at most {MAX_GIF_SECONDS} seconds long; this one would be "
+                f"{(end - start) / speed:.1f} seconds.\n\n"
+                "Shorten the clip or raise the speed.")
             return
+        self.stop_playback()
 
         base = os.path.splitext(os.path.basename(self.video_path))[0]
         default = f"{base}_{start:.1f}-{end:.1f}.gif".replace(":", "-")
