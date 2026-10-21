@@ -1,0 +1,58 @@
+name: Build Windows exe
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements-build.txt
+
+      - name: Smoke test GIF conversion
+        shell: python
+        run: |
+          import os, subprocess, tempfile
+          from gifmaker import ffmpeg_tools as ff
+          exe = ff.find_ffmpeg()
+          d = tempfile.mkdtemp()
+          src, dst = os.path.join(d, "in.mp4"), os.path.join(d, "out.gif")
+          subprocess.run([exe, "-y", "-loglevel", "error", "-f", "lavfi",
+                          "-i", "testsrc2=size=640x360:rate=30", "-t", "5",
+                          "-pix_fmt", "yuv420p", src], check=True)
+          print(ff.probe(exe, src))
+          assert ff.grab_frame(exe, src, 1.0, 320, 180)
+          err = ff.make_gif(ff.build_gif_command(exe, src, dst, 1.0, 3.0, 10, 320), 2.0)
+          assert err is None, err
+          assert os.path.getsize(dst) > 1000
+          print("ok", os.path.getsize(dst))
+
+      - name: Build exe
+        run: >
+          python -m PyInstaller --noconfirm --onefile --windowed --name GifMaker
+          --collect-all imageio_ffmpeg run_gifmaker.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GifMaker-windows
+          path: dist/GifMaker.exe
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/GifMaker.exe
