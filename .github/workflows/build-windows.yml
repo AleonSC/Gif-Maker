@@ -25,6 +25,8 @@ jobs:
 
       - name: Smoke test GIF conversion
         shell: python
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           import os, subprocess, tempfile
           from gifmaker import ffmpeg_tools as ff
