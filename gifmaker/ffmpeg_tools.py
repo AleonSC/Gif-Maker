@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import threading
+from collections import namedtuple
 
 # Stop ffmpeg from flashing a console window when running as a windowed .exe.
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
@@ -51,8 +52,14 @@ def format_time(seconds):
     return f"{int(m)}:{s:06.3f}"
 
 
+VideoInfo = namedtuple("VideoInfo", "duration width height fps has_audio")
+
+
 def probe(ffmpeg, path):
-    """Return (duration_seconds, width, height, fps) for a video file."""
+    """Return a VideoInfo for a video file.
+
+    width and height are as displayed: swapped for phone videos flagged as rotated.
+    """
     proc = subprocess.run(
         [ffmpeg, "-hide_banner", "-i", path],
         capture_output=True,
@@ -77,14 +84,49 @@ def probe(ffmpeg, path):
     m = re.search(r"([\d.]+)\s*fps", video_line)
     if m:
         fps = float(m.group(1))
-    return duration, width, height, fps
+    m = (re.search(r"rotation of (-?[\d.]+) degrees", info)
+         or re.search(r"^\s*rotate\s*:\s*(-?\d+)", info, re.MULTILINE))
+    if m and round(abs(float(m.group(1)))) % 180 == 90:
+        width, height = height, width
+    has_audio = any("Audio:" in l for l in info.splitlines())
+    return VideoInfo(duration, width, height, fps, has_audio)
 
 
-def grab_frame(ffmpeg, path, seconds, max_w, max_h, fast=False):
+def transform_filters(rotate=0, flip=False, crop=None):
+    """ffmpeg filters for a user rotation (degrees clockwise), mirror and crop.
+
+    crop is (x, y, w, h) as fractions of the rotated frame, or None for no crop.
+    Returns a filter chain string, possibly empty.
+    """
+    filters = []
+    rotate %= 360
+    if rotate == 90:
+        filters.append("transpose=1")
+    elif rotate == 180:
+        filters.append("hflip,vflip")
+    elif rotate == 270:
+        filters.append("transpose=2")
+    if flip:
+        filters.append("hflip")
+    if crop and tuple(crop) != (0, 0, 1, 1):
+        x, y, w, h = crop
+        filters.append(
+            f"crop=trunc(iw*{w:.6f}/2)*2:trunc(ih*{h:.6f}/2)*2"
+            f":trunc(iw*{x:.6f}):trunc(ih*{y:.6f})"
+        )
+    return ",".join(filters)
+
+
+def chain(*parts):
+    return ",".join(p for p in parts if p)
+
+
+def grab_frame(ffmpeg, path, seconds, max_w, max_h, fast=False, pre_vf=""):
     """Return the frame at `seconds` as PPM bytes for tk.PhotoImage, or None.
 
     fast=True jumps to the nearest keyframe at or before `seconds` instead of
     decoding up to the exact frame: much quicker, but only approximate.
+    pre_vf is applied before scaling, e.g. a transform_filters() chain.
     """
     vf = (
         f"scale='min({max_w},iw)':'min({max_h},ih)'"
@@ -100,12 +142,12 @@ def grab_frame(ffmpeg, path, seconds, max_w, max_h, fast=False):
         cmd += ["-copyts"]
     cmd += [
         "-i", path, "-an", "-sn",
-        "-frames:v", "1", "-vf", vf,
+        "-frames:v", "1", "-vf", chain(pre_vf, vf),
         "-f", "image2pipe", "-vcodec", "ppm", "-",
     ]
     proc = subprocess.run(cmd, capture_output=True, creationflags=_NO_WINDOW)
     if proc.returncode != 0 or not proc.stdout:
-        return grab_frame(ffmpeg, path, seconds, max_w, max_h) if fast else None
+        return grab_frame(ffmpeg, path, seconds, max_w, max_h, pre_vf=pre_vf) if fast else None
     return proc.stdout
 
 
@@ -156,18 +198,22 @@ def iter_keyframes(ffmpeg, path, width, height, min_gap, should_stop):
 
 
 def build_gif_command(ffmpeg, src, dst, start, end, fps, width, speed=1.0,
-                      colors=256, loop=True, dither="sierra2_4a"):
-    """Build the ffmpeg command line for a high-quality two-pass-palette GIF."""
+                      colors=256, loop=True, dither="sierra2_4a", pre_vf=""):
+    """Build the ffmpeg command line for a high-quality two-pass-palette GIF.
+
+    pre_vf (e.g. a transform_filters() chain) is applied first. width 0 keeps
+    the size; otherwise the GIF is scaled down (never up) to that width.
+    """
     duration = end - start
-    filters = []
+    filters = [pre_vf]
     if speed != 1.0:
         filters.append(f"setpts=PTS/{speed}")
     filters.append(f"fps={fps}")
     if width > 0:
-        filters.append(f"scale={width}:-2:flags=lanczos")
-    chain = ",".join(filters)
+        filters.append(f"scale='min({width},iw)':-2:flags=lanczos")
+    filter_chain = chain(*filters)
     graph = (
-        f"{chain},split[a][b];"
+        f"{filter_chain},split[a][b];"
         f"[a]palettegen=max_colors={colors}:stats_mode=diff[p];"
         f"[b][p]paletteuse=dither={dither}:diff_mode=rectangle"
     )
@@ -231,14 +277,19 @@ def fit_size(width, height, max_w, max_h):
     return w, h
 
 
-def open_raw_stream(ffmpeg, path, start, width, height, fps, duration=None):
-    """Start ffmpeg decoding the video as raw RGB frames of width x height on stdout."""
+def open_raw_stream(ffmpeg, path, start, width, height, fps, duration=None,
+                    pre_vf="", speed=1.0):
+    """Start ffmpeg decoding the video as raw RGB frames of width x height on stdout.
+
+    duration is in source seconds; output frames come at `fps` after the speed change.
+    """
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", f"{start:.3f}"]
     if duration is not None:
         cmd += ["-t", f"{duration:.3f}"]
+    setpts = f"setpts=PTS/{speed}" if speed != 1.0 else ""
     cmd += [
         "-i", path, "-an", "-sn",
-        "-vf", f"fps={fps},scale={width}:{height}:flags=bilinear",
+        "-vf", chain(pre_vf, setpts, f"fps={fps}", f"scale={width}:{height}:flags=bilinear"),
         "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
     ]
     return subprocess.Popen(
@@ -250,15 +301,33 @@ def open_raw_stream(ffmpeg, path, start, width, height, fps, duration=None):
     )
 
 
-def save_frame(ffmpeg, path, seconds, dst):
+def open_audio_stream(ffmpeg, path, start, rate, channels):
+    """Start ffmpeg decoding the audio from `start` as s16le PCM on stdout."""
+    return subprocess.Popen(
+        [
+            ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", f"{start:.3f}",
+            "-i", path, "-vn", "-sn", "-dn",
+            "-f", "s16le", "-acodec", "pcm_s16le", "-ac", str(channels), "-ar", str(rate), "-",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        creationflags=_NO_WINDOW,
+    )
+
+
+def save_frame(ffmpeg, path, seconds, dst, vf=""):
     """Save the full-resolution frame at `seconds` to dst (format from its extension).
 
+    vf is an optional filter chain such as transform_filters().
     Returns None on success or an error message.
     """
     cmd = [
         ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
         "-ss", f"{seconds:.3f}", "-i", path, "-frames:v", "1", "-update", "1",
     ]
+    if vf:
+        cmd += ["-vf", vf]
     if os.path.splitext(dst)[1].lower() in (".jpg", ".jpeg"):
         cmd += ["-q:v", "2"]
     cmd.append(dst)

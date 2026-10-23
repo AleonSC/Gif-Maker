@@ -57,6 +57,13 @@ jobs:
           python -m PyInstaller --noconfirm --onefile --windowed --name GifMaker
           --collect-all imageio_ffmpeg --collect-all tkinterdnd2 run_gifmaker.py
 
+      - name: Self-test the packaged exe
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\GifMaker.exe -ArgumentList '--selftest', "$PWD\selftest.txt" -Wait -PassThru
+          Get-Content selftest.txt
+          exit $p.ExitCode
+
       - uses: actions/upload-artifact@v4
         with:
           name: GifMaker-windows
