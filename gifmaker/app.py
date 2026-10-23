@@ -34,6 +34,30 @@ NO_TRANSFORM = {"rotate": 0, "flip": False, "crop": (0.0, 0.0, 1.0, 1.0)}
 _NO_SHORTCUT_WIDGETS = (ttk.Entry, tk.Entry, ttk.Combobox, ttk.Spinbox, ttk.Button, ttk.Checkbutton)
 
 
+class Tooltip:
+    """Shows a small hint next to a widget while the mouse is over it."""
+
+    def __init__(self, widget, text):
+        self.widget, self.text, self.tip = widget, text, None
+        widget.bind("<Enter>", self._show, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+
+    def _show(self, _event):
+        x = self.widget.winfo_rootx()
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+        self.tip = tk.Toplevel(self.widget)
+        self.tip.wm_overrideredirect(True)
+        self.tip.wm_geometry(f"+{x}+{y}")
+        tk.Label(self.tip, text=self.text, background="#ffffe0", relief="solid",
+                 borderwidth=1, padx=6, pady=2).pack()
+
+    def _hide(self, _event):
+        if self.tip:
+            self.tip.destroy()
+            self.tip = None
+
+
 class GifMakerApp:
     def __init__(self, root, ffmpeg):
         self.root = root
@@ -133,10 +157,20 @@ class GifMakerApp:
         self.clip_btn.pack(side="left", padx=2)
         self.sound_check = ttk.Checkbutton(step, text="Sound", variable=self.sound,
                                            command=self._sound_toggled)
-        self.sound_check.pack(side="left", padx=(4, 12))
+        self.sound_check.pack(side="left", padx=(4, 10))
+        # Quick marking while watching: loop start, loop end, and keep as a section.
+        for text, width, command, tip in (
+                ("[", 3, self.set_start, "Set the loop start (green marker) to the playhead  ( [ key )"),
+                ("]", 3, self.set_end, "Set the loop end (red marker) to the playhead  ( ] key )"),
+                ("+ Section", 9, self._section_button,
+                 "Keep the loop as a video section (finishes editing if you're changing one)")):
+            button = ttk.Button(step, text=text, width=width, command=command)
+            button.pack(side="left", padx=1)
+            Tooltip(button, tip)
+        ttk.Frame(step, width=10).pack(side="left")
         for label, delta in (("<< 1s", -1), ("< frame", "-f"), ("frame >", "+f"), ("1s >>", 1)):
-            ttk.Button(step, text=label, width=9,
-                       command=lambda d=delta: self.step(d)).pack(side="left", padx=2)
+            ttk.Button(step, text=label, width=7,
+                       command=lambda d=delta: self.step(d)).pack(side="left", padx=1)
         ttk.Button(step, text="Save snapshot...",
                    command=self.save_snapshot).pack(side="left", padx=(12, 2))
 
@@ -548,10 +582,24 @@ class GifMakerApp:
 
     # ------------------------------------------------------------- range
     def set_start(self):
-        self.start_text.set(ff.format_time(self.position.get()))
+        t = self.position.get()
+        try:
+            _, end = self._range()
+        except ValueError:
+            end = self.duration
+        if end <= t:  # past the end marker: move that out of the way
+            self.end_text.set(ff.format_time(self.duration))
+        self.start_text.set(ff.format_time(t))
 
     def set_end(self):
-        self.end_text.set(ff.format_time(self.position.get()))
+        t = self.position.get()
+        try:
+            start, _ = self._range()
+        except ValueError:
+            start = 0.0
+        if start >= t:  # before the start marker: move that out of the way
+            self.start_text.set(ff.format_time(0))
+        self.end_text.set(ff.format_time(t))
 
     def _range(self):
         start = ff.parse_time(self.start_text.get())

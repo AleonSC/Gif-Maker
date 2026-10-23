@@ -9,7 +9,9 @@ A small Windows desktop app for turning a section of a video into a GIF.
    you want. While you drag, the preview shows quick keyframe thumbnails; the exact frame
    appears as soon as you stop.
 3. Set the clip by dragging the green (start) and red (end) markers on the timeline, with
-   **Set to current** (or `[` and `]`), or by typing times like `12.5` or `1:02.25`.
+   the **[** and **]** buttons on the play bar (or the `[` and `]` keys), which also work
+   while the video plays, or by typing times like `12.5` or `1:02.25`. **+ Section** on the
+   play bar keeps the current loop as a video section (see below).
 4. Click **Play clip** to loop just that section. You can drag the markers while it loops
    to fine-tune it.
 5. Choose FPS, width, speed, color count and looping, then click **Make GIF...**.
