@@ -40,6 +40,7 @@ class GifMakerApp:
         self.ffmpeg = ffmpeg
         root.title("GifMaker")
         root.minsize(760, 640)
+        root.protocol("WM_DELETE_WINDOW", self.close)
         self.video_path = None
         self.duration = 0.0
         self.video_fps = 0.0
@@ -78,6 +79,11 @@ class GifMakerApp:
         self._build_ui()
         self._enable_drop()
         self._poll_frame_queue()
+
+    def close(self):
+        # Stop the sound before Tk and Python shut down, or PortAudio can crash on exit.
+        self.player.close()
+        self.root.destroy()
 
     @property
     def playing(self):
@@ -694,6 +700,7 @@ def main():
     if len(sys.argv) > 1 and os.path.isfile(sys.argv[1]):
         root.after(100, lambda: app.open_video(sys.argv[1]))
     root.mainloop()
+    app.player.close()
 
 
 if __name__ == "__main__":
