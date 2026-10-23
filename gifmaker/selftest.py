@@ -29,16 +29,31 @@ def run(report_path):
         exe = ff.find_ffmpeg()
         return exe
 
-    def gif():
-        d = tempfile.mkdtemp()
-        src, dst = os.path.join(d, "in.mp4"), os.path.join(d, "out.gif")
+    src = None
+
+    def source():
+        nonlocal src
+        src = os.path.join(tempfile.mkdtemp(), "in.mp4")
         subprocess.run([exe, "-y", "-loglevel", "error", "-f", "lavfi", "-i",
-                        "testsrc2=size=320x180:rate=30", "-t", "2", "-pix_fmt", "yuv420p", src],
+                        "testsrc2=size=320x180:rate=30", "-f", "lavfi", "-i", "sine",
+                        "-t", "2", "-pix_fmt", "yuv420p", src],
                        check=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return ff.probe(exe, src)
+
+    def gif():
+        dst = os.path.join(os.path.dirname(src), "out.gif")
         vf = ff.transform_filters(90, True, (0.1, 0.1, 0.5, 0.5))
         err = ff.run_with_progress(ff.build_gif_command(exe, src, dst, 0.5, 1.5, 10, 0, pre_vf=vf), 1.0)
         assert err is None, err
         return f"{os.path.getsize(dst)} bytes"
+
+    def video():
+        dst = os.path.join(os.path.dirname(src), "clip.mp4")
+        err = ff.run_with_progress(ff.build_clip_command(exe, src, dst, 0.5, 1.5), 1.0)
+        assert err is None, err
+        info = ff.probe(exe, dst)
+        assert info.has_audio and abs(info.duration - 1.0) < 0.1, info
+        return f"{os.path.getsize(dst)} bytes, {info}"
 
     def sound():
         import sounddevice
@@ -53,7 +68,9 @@ def run(report_path):
             root.destroy()
 
     check("ffmpeg", ffmpeg)
+    check("source video", source)
     check("gif", gif)
+    check("video clip", video)
     check("sound", sound)
     check("drag and drop", drag_and_drop)
     with open(report_path, "w", encoding="utf-8") as f:
