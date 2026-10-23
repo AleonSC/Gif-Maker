@@ -20,9 +20,14 @@ A small Windows desktop app for turning a section of a video into a GIF.
 **Save snapshot...** saves the frame you're looking at as a full-resolution PNG or JPEG,
 with the same preview window for rotating and cropping first.
 
-**Save clip as video...** saves the section between the markers as a new MP4 (with its
-sound), cut exactly at the markers. **Clear** closes the current video so you can start
-over, and **Show folder after saving** opens Explorer on each file you save.
+**Save video...** saves the section between the markers as a new MP4 (with its sound),
+cut exactly at the markers, after the same rotate/crop preview. To keep several parts of
+a video, set the markers and click **Add section** for each part: the sections appear in
+the orange strip under the timeline (click one to change it with the markers, then
+**Done editing**), and **Save video...** joins them in time order and cuts out the rest.
+
+**Clear** closes the current video so you can start over, and **Show folder after
+saving** opens Explorer on each file you save.
 
 GIFs are made with ffmpeg's two-pass palette method, which gives much better colors than a
 plain conversion. ffmpeg is bundled inside the exe, so there is nothing else to install.

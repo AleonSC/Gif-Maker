@@ -25,20 +25,24 @@ FULL = (0.0, 0.0, 1.0, 1.0)
 class ExportDialog(tk.Toplevel):
     """Shows what will be saved and lets the user rotate, flip and crop it.
 
-    mode is "snapshot" (the frame at `time`) or "gif" (loops start..end at the
-    GIF's fps and speed). transform is a dict with rotate (degrees clockwise),
+    mode is "snapshot" (the frame at `time`), "gif" (loops start..end at the
+    GIF's fps and speed) or "video" (plays `sections` one after another, with
+    sound, and loops). transform is a dict with rotate (degrees clockwise),
     flip (mirror) and crop ((x, y, w, h) fractions of the rotated frame).
     on_save(transform) is called with the chosen settings when Save is clicked.
     """
 
     def __init__(self, app, mode, transform, on_save, time=0.0, start=0.0, end=0.0,
-                 fps=15, width=0, speed=1.0):
+                 fps=15, width=0, speed=1.0, sections=None, sound=False):
         super().__init__(app.root)
         self.app = app
         self.mode = mode
         self.on_save = on_save
-        self.time, self.start, self.end = time, start, end
+        self.time = time
+        self.sections = sections or [(start, end)]
+        self.section = 0  # which section the preview is playing
         self.fps, self.gif_width, self.speed = fps, width, speed
+        self.sound = sound
         self.rotate = transform["rotate"] % 360
         self.flip = transform["flip"]
         self.crop = list(transform["crop"])
@@ -48,7 +52,7 @@ class ExportDialog(tk.Toplevel):
         self.box = (0, 0, 2, 2)  # where the image is drawn: x, y, w, h
         self.grab_token = 0
 
-        self.title("Save snapshot" if mode == "snapshot" else "Save GIF")
+        self.title({"snapshot": "Save snapshot", "gif": "Save GIF", "video": "Save video"}[mode])
         self.transient(app.root)
         self.resizable(False, False)
         self._build()
@@ -93,8 +97,8 @@ class ExportDialog(tk.Toplevel):
         self.info = ttk.Label(bottom)
         self.info.pack(side="left")
         ttk.Button(bottom, text="Cancel", command=self.close).pack(side="right")
-        ttk.Button(bottom, text="Save snapshot..." if self.mode == "snapshot" else "Save GIF...",
-                   command=self._save).pack(side="right", padx=6)
+        label = {"snapshot": "Save snapshot...", "gif": "Save GIF...", "video": "Save video..."}
+        ttk.Button(bottom, text=label[self.mode], command=self._save).pack(side="right", padx=6)
 
     # -------------------------------------------------------- transforms
     def transform(self):
@@ -163,9 +167,11 @@ class ExportDialog(tk.Toplevel):
         self.box = ((VIEW_W - dw) // 2, (VIEW_H - dh) // 2, dw, dh)
         self.canvas.coords(self.image_item, self.box[0], self.box[1])
         rot = ff.transform_filters(self.rotate, self.flip)
-        if self.mode == "gif":
-            self.player.start(self.app.video_path, self.start, (dw, dh), self.fps,
-                              end=self.end, pre_vf=rot, speed=self.speed)
+        if self.mode in ("gif", "video"):
+            start, end = self.sections[self.section]
+            self.player.muted = not self.app.sound.get()
+            self.player.start(self.app.video_path, start, (dw, dh), self.fps,
+                              end=end, pre_vf=rot, speed=self.speed, sound=self.sound)
         else:
             self.grab_token += 1
             token, path, t = self.grab_token, self.app.video_path, self.time
@@ -189,6 +195,7 @@ class ExportDialog(tk.Toplevel):
             pass
 
     def _restart_loop(self):
+        self.section = (self.section + 1) % len(self.sections)  # next section, then round again
         self._reload()
 
     # -------------------------------------------------------------- crop
@@ -223,9 +230,15 @@ class ExportDialog(tk.Toplevel):
         if self.mode == "snapshot":
             self.info.config(text=f"Output: {cw} × {ch} px")
             return
+        if self.mode == "video":
+            total = sum(e - s for s, e in self.sections)
+            parts = f" from {len(self.sections)} sections" if len(self.sections) > 1 else ""
+            self.info.config(text=f"Video: {cw} × {ch} px, {total:.2f} s{parts}")
+            return
         ow = min(self.gif_width, cw) if self.gif_width > 0 else cw
         oh = max(2, round(ch * ow / cw / 2) * 2)
-        secs = (self.end - self.start) / self.speed
+        start, end = self.sections[0]
+        secs = (end - start) / self.speed
         self.info.config(text=f"GIF: {ow} × {oh} px, {secs:.2f} s at {self.fps} fps "
                               f"({round(secs * self.fps)} frames)")
 

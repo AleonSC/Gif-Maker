@@ -49,7 +49,8 @@ def run(report_path):
 
     def video():
         dst = os.path.join(os.path.dirname(src), "clip.mp4")
-        err = ff.run_with_progress(ff.build_clip_command(exe, src, dst, 0.5, 1.5), 1.0)
+        err = ff.run_with_progress(ff.build_clip_command(exe, src, dst, [(0.2, 0.7), (1.0, 1.5)], True,
+                                                      ff.transform_filters(90)), 1.0)
         assert err is None, err
         info = ff.probe(exe, dst)
         assert info.has_audio and abs(info.duration - 1.0) < 0.1, info

@@ -227,24 +227,53 @@ def build_gif_command(ffmpeg, src, dst, start, end, fps, width, speed=1.0,
     ]
 
 
-def build_clip_command(ffmpeg, src, dst, start, end):
-    """Build the ffmpeg command line to save start..end as an MP4 (H.264 + AAC).
+def merge_sections(sections):
+    """Sort (start, end) sections by time and merge any that overlap or touch."""
+    merged = []
+    for start, end in sorted(sections):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
 
-    The clip is re-encoded so it starts exactly at `start` (a straight copy can
-    only cut on keyframes), at a quality close to the original.
+
+def build_clip_command(ffmpeg, src, dst, sections, has_audio, pre_vf=""):
+    """Build the ffmpeg command line to save sections of a video, joined, as an MP4.
+
+    sections is a list of (start, end) in play order. Each is read with its own
+    exact seek and the pieces are joined, so everything outside them is cut out.
+    The video is re-encoded (H.264 + AAC, quality close to the original) so cuts
+    land exactly on the given times. pre_vf (e.g. transform_filters()) is applied
+    to the joined video.
     """
-    return [
-        ffmpeg, "-hide_banner", "-y", "-nostats", "-loglevel", "error",
-        "-progress", "pipe:1",
-        "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", src,
-        "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn",
-        # H.264 in yuv420p needs even dimensions
-        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+    cmd = [ffmpeg, "-hide_banner", "-y", "-nostats", "-loglevel", "error",
+           "-progress", "pipe:1"]
+    graph = []
+    joined = ""
+    for i, (start, end) in enumerate(sections):
+        length = end - start
+        cmd += ["-ss", f"{start:.3f}", "-t", f"{length:.3f}", "-i", src]
+        graph.append(f"[{i}:v:0]trim=end={length:.3f},setpts=PTS-STARTPTS[v{i}]")
+        joined += f"[v{i}]"
+        if has_audio:
+            # Pad or trim each piece's sound to the piece's exact length, so the
+            # sound can't drift out of step with the picture across the joins.
+            graph.append(f"[{i}:a:0]apad,atrim=end={length:.3f},asetpts=PTS-STARTPTS[a{i}]")
+            joined += f"[a{i}]"
+    audio = 1 if has_audio else 0
+    graph.append(f"{joined}concat=n={len(sections)}:v=1:a={audio}[vj]" + ("[aj]" if audio else ""))
+    # H.264 in yuv420p needs even dimensions
+    graph.append("[vj]" + chain(pre_vf, "scale=trunc(iw/2)*2:trunc(ih/2)*2") + "[vout]")
+    cmd += ["-filter_complex", ";".join(graph), "-map", "[vout]"]
+    if audio:
+        cmd += ["-map", "[aj]", "-c:a", "aac", "-b:a", "192k"]
+    cmd += [
         "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart",
         dst,
     ]
+    return cmd
 
 
 def run_with_progress(cmd, output_seconds, on_progress=None, should_cancel=None):

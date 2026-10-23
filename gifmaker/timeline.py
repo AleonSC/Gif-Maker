@@ -10,23 +10,32 @@ COLORS = {
     "start": "#2e9e44",
     "end": "#d03a3a",
     "playhead": "#222222",
+    "section": "#f2b75a",
+    "section_selected": "#e07b00",
 }
+LANE_TOP = 47  # the strip under the track that shows the saved sections
 
 
 class Timeline(tk.Canvas):
     """Click or drag anywhere to seek; drag the green/red markers to set the loop.
 
+    Saved sections are drawn in a strip underneath; clicking one selects it.
+
     Callbacks:
       on_seek(t)            while seeking (also called on the initial click)
       on_seek_end()         when the mouse is released after seeking
       on_marker(which, t, final)  which is "start" or "end"; final on release
+      on_section(index)     a section was clicked (None: an empty part of the strip)
     """
 
-    def __init__(self, master, on_seek, on_seek_end, on_marker, **kw):
-        super().__init__(master, height=44, highlightthickness=0, **kw)
+    def __init__(self, master, on_seek, on_seek_end, on_marker, on_section, **kw):
+        super().__init__(master, height=LANE_TOP + 14, highlightthickness=0, **kw)
         self.on_seek = on_seek
         self.on_seek_end = on_seek_end
         self.on_marker = on_marker
+        self.on_section = on_section
+        self.sections = []
+        self.selected = None
         self.duration = 0.0
         self.position = 0.0
         self.start = 0.0
@@ -51,6 +60,10 @@ class Timeline(tk.Canvas):
         self.start, self.end = start, end
         self.redraw()
 
+    def set_sections(self, sections, selected):
+        self.sections, self.selected = list(sections), selected
+        self.redraw()
+
     # ---------------------------------------------------------- geometry
     def _x(self, t):
         w = self.winfo_width() - 2 * MARGIN
@@ -59,6 +72,12 @@ class Timeline(tk.Canvas):
     def _t(self, x):
         w = max(1, self.winfo_width() - 2 * MARGIN)
         return min(self.duration, max(0.0, (x - MARGIN) / w * self.duration))
+
+    def _section_at(self, x):
+        t = self._t(x)
+        hits = [i for i, (s, e) in enumerate(self.sections) if s <= t <= e]
+        # Overlapping sections: prefer the shortest, so small ones stay clickable.
+        return min(hits, key=lambda i: self.sections[i][1] - self.sections[i][0]) if hits else None
 
     def _marker_at(self, x):
         if not self.duration:
@@ -75,7 +94,17 @@ class Timeline(tk.Canvas):
         self.delete("all")
         w = self.winfo_width()
         self.create_rectangle(MARGIN, 18, w - MARGIN, 26, fill=COLORS["track"], width=0)
+        self.create_rectangle(MARGIN, LANE_TOP, w - MARGIN, LANE_TOP + 12, fill="#e6e6e6", width=0)
         if self.duration:
+            order = [i for i in range(len(self.sections)) if i != self.selected]
+            if self.selected is not None:
+                order.append(self.selected)  # drawn last, on top
+            for i in order:
+                s, e = self.sections[i]
+                sel = i == self.selected
+                self.create_rectangle(self._x(s), LANE_TOP, max(self._x(e), self._x(s) + 2),
+                                      LANE_TOP + 12, width=2 if sel else 1, outline="#7a4a00",
+                                      fill=COLORS["section_selected" if sel else "section"])
             xs, xe = self._x(self.start), self._x(self.end)
             self.create_rectangle(xs, 14, xe, 30, fill=COLORS["range"], width=0)
             for x, color, sign in ((xs, COLORS["start"], 1), (xe, COLORS["end"], -1)):
@@ -97,10 +126,17 @@ class Timeline(tk.Canvas):
     # ------------------------------------------------------------- mouse
     def _hover(self, event):
         if self.dragging is None:
-            self.config(cursor="sb_h_double_arrow" if self._marker_at(event.x) else "")
+            if event.y >= LANE_TOP - 2:
+                cursor = "hand2" if self._section_at(event.x) is not None else ""
+            else:
+                cursor = "sb_h_double_arrow" if self._marker_at(event.x) else ""
+            self.config(cursor=cursor)
 
     def _press(self, event):
         if not self.duration:
+            return
+        if event.y >= LANE_TOP - 2:
+            self.on_section(self._section_at(event.x))
             return
         self.dragging = self._marker_at(event.x) or "seek"
         self._motion(event)

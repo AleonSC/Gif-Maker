@@ -48,6 +48,9 @@ class GifMakerApp:
         self.video_height = 0
         self.has_audio = False
         self.transform = dict(NO_TRANSFORM)  # rotate/flip/crop last used for saving
+        self.sections = []  # (start, end) parts to keep when saving a video
+        self.section_sel = None  # index of the section the markers are editing
+        self._loading_section = False
         self.video_token = 0  # bumped per opened video so stale work is ignored
         self.preview_image = None
         self.shown_t = None  # video time of the frame currently in the preview
@@ -78,6 +81,7 @@ class GifMakerApp:
         self.status = tk.StringVar(value="Open a video to get started.")
 
         self._build_ui()
+        self._sections_changed()
         self._enable_drop()
         self._poll_frame_queue()
 
@@ -114,7 +118,7 @@ class GifMakerApp:
         scrub = ttk.Frame(main)
         scrub.pack(fill="x")
         self.timeline = Timeline(scrub, on_seek=self._on_drag, on_seek_end=self._settle,
-                                 on_marker=self._on_marker)
+                                 on_marker=self._on_marker, on_section=self._select_section)
         self.timeline.pack(side="left", fill="x", expand=True)
         self.position.trace_add("write", lambda *_: self.timeline.set_position(self.position.get()))
         self.pos_label = ttk.Label(scrub, text="0:00.000", width=12, anchor="e")
@@ -151,6 +155,17 @@ class GifMakerApp:
                    command=lambda: self.goto(self.end_text)).grid(row=0, column=7, **pad)
         self.length_label = ttk.Label(rng, text="GIF length: 0.00s")
         self.length_label.grid(row=1, column=0, columnspan=9, sticky="w", **pad)
+        sec = ttk.Frame(rng)
+        sec.grid(row=2, column=0, columnspan=9, sticky="w", padx=8, pady=(2, 4))
+        self.section_btn = ttk.Button(sec, text="Add section", width=13,
+                                      command=self._section_button)
+        self.section_btn.pack(side="left")
+        self.remove_section_btn = ttk.Button(sec, text="Remove section",
+                                             command=self.remove_section, state="disabled")
+        self.remove_section_btn.pack(side="left", padx=4)
+        ttk.Button(sec, text="Clear sections", command=self.clear_sections).pack(side="left")
+        self.section_label = ttk.Label(sec, foreground="#555", wraplength=470, justify="left")
+        self.section_label.pack(side="left", padx=(10, 0))
         for var in (self.start_text, self.end_text, self.speed):
             var.trace_add("write", lambda *_: self._range_changed())
 
@@ -173,7 +188,7 @@ class GifMakerApp:
         bottom.pack(fill="x", pady=(8, 0))
         self.make_btn = ttk.Button(bottom, text="Make GIF...", command=self.make_gif)
         self.make_btn.pack(side="left")
-        self.video_btn = ttk.Button(bottom, text="Save clip as video...",
+        self.video_btn = ttk.Button(bottom, text="Save video...",
                                     command=self.save_clip_video)
         self.video_btn.pack(side="left", padx=(6, 0))
         self.cancel_btn = ttk.Button(bottom, text="Cancel", command=self.cancel, state="disabled")
@@ -248,6 +263,7 @@ class GifMakerApp:
         self.has_audio = info.has_audio
         self.sound_check.config(state="normal" if info.has_audio else "disabled")
         self.transform = dict(NO_TRANSFORM)
+        self.clear_sections()
         sound = "" if info.has_audio else ", no sound"
         self.file_label.config(text=f"{os.path.basename(path)}   ({ff.format_time(duration)}, "
                                     f"{w}x{h}, {self.video_fps:g} fps{sound})", foreground="#000")
@@ -278,6 +294,7 @@ class GifMakerApp:
         self.video_width = self.video_height = 0
         self.has_audio = False
         self.transform = dict(NO_TRANSFORM)
+        self.clear_sections()
         self.thumbs = []
         self.thumbs_done = False
         self.frame_want = None
@@ -563,7 +580,60 @@ class GifMakerApp:
             self.timeline.set_range(start, min(end, self.duration))
             if self.playing and self.play_clip and end > start:
                 self.player.end = end  # the loop picks up a new end straight away
+            if self.section_sel is not None and not self._loading_section and end > start:
+                self.sections[self.section_sel] = (start, min(end, self.duration))
+                self._sections_changed()
         self._update_length()
+
+    # ---------------------------------------------------------- sections
+    def _section_button(self):
+        if self.section_sel is not None:  # "Done editing"
+            self._select_section(None)
+            return
+        rng = self._valid_range()
+        if rng:
+            self.sections.append(rng)
+            self._sections_changed()
+
+    def remove_section(self):
+        if self.section_sel is not None:
+            del self.sections[self.section_sel]
+            self.section_sel = None
+            self._sections_changed()
+
+    def clear_sections(self):
+        self.sections, self.section_sel = [], None
+        self._sections_changed()
+
+    def _select_section(self, index):
+        """Edit a section with the markers (index None: stop editing)."""
+        self.section_sel = index
+        if index is not None:
+            start, end = self.sections[index]
+            self._loading_section = True
+            self.start_text.set(ff.format_time(start))
+            self.end_text.set(ff.format_time(end))
+            self._loading_section = False
+            if not (self.playing and self.play_clip):
+                self._seek(start)
+        self._sections_changed()
+
+    def _sections_changed(self):
+        self.timeline.set_sections(self.sections, self.section_sel)
+        n = len(self.sections)
+        self.section_btn.config(text="Done editing" if self.section_sel is not None else "Add section")
+        self.remove_section_btn.config(state="normal" if self.section_sel is not None else "disabled")
+        if not n:
+            text = ("To keep several parts of the video: set the markers, click Add section, "
+                    "repeat. Save video then cuts out everything else.")
+        elif self.section_sel is not None:
+            text = (f"Editing section {self.section_sel + 1} of {n}: the markers now move it. "
+                    "Click Done editing when it's right.")
+        else:
+            total = sum(e - s for s, e in ff.merge_sections(self.sections))
+            text = (f"{n} section{'s' if n > 1 else ''}, {total:.2f} s in total: Save video keeps "
+                    "only these. Click one in the strip under the timeline to change it.")
+        self.section_label.config(text=text)
 
     def _on_marker(self, which, t, final):
         """A loop marker on the timeline was dragged to t."""
@@ -660,27 +730,41 @@ class GifMakerApp:
 
     # ------------------------------------------------------------- video
     def save_clip_video(self):
-        """Save the start..end section as a new video file, with its sound."""
+        """Save the sections (or the marker range if there are none) as a new video."""
         if self.busy:
             return
         if not self.video_path:
             messagebox.showinfo("GifMaker", "Open a video first.")
             return
-        rng = self._valid_range()
-        if not rng:
-            return
-        start, end = rng
+        if self.sections:
+            sections = ff.merge_sections(self.sections)
+        else:
+            rng = self._valid_range()
+            if not rng:
+                return
+            sections = [rng]
         self.stop_playback()
+        ExportDialog(self, "video", self.transform,
+                     lambda transform: self._save_video(sections, transform),
+                     sections=sections, fps=min(self.video_fps, MAX_PLAYBACK_FPS),
+                     sound=self.has_audio)
+
+    def _save_video(self, sections, transform):
+        self.transform = transform
         base = os.path.splitext(os.path.basename(self.video_path))[0]
+        if len(sections) == 1:
+            name = f"{base}_{sections[0][0]:.1f}-{sections[0][1]:.1f}.mp4"
+        else:
+            name = f"{base}_edit.mp4"
         dst = filedialog.asksaveasfilename(
-            title="Save clip as video", defaultextension=".mp4",
-            initialfile=f"{base}_{start:.1f}-{end:.1f}.mp4",
+            title="Save video as", defaultextension=".mp4", initialfile=name,
             initialdir=os.path.dirname(self.video_path),
             filetypes=[("MP4 video", "*.mp4")])
         if not dst or self._is_source(dst):
             return
-        cmd = ff.build_clip_command(self.ffmpeg, self.video_path, dst, start, end)
-        self._run(cmd, end - start, dst, "Video")
+        cmd = ff.build_clip_command(self.ffmpeg, self.video_path, dst, sections, self.has_audio,
+                                    pre_vf=ff.transform_filters(**transform))
+        self._run(cmd, sum(e - s for s, e in sections), dst, "Video")
 
     # -------------------------------------------------------------- save
     def _is_source(self, dst):
