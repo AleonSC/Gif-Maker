@@ -227,8 +227,29 @@ def build_gif_command(ffmpeg, src, dst, start, end, fps, width, speed=1.0,
     ]
 
 
-def make_gif(cmd, output_seconds, on_progress=None, should_cancel=None):
-    """Run a command from build_gif_command, reporting progress in 0..1.
+def build_clip_command(ffmpeg, src, dst, start, end):
+    """Build the ffmpeg command line to save start..end as an MP4 (H.264 + AAC).
+
+    The clip is re-encoded so it starts exactly at `start` (a straight copy can
+    only cut on keyframes), at a quality close to the original.
+    """
+    return [
+        ffmpeg, "-hide_banner", "-y", "-nostats", "-loglevel", "error",
+        "-progress", "pipe:1",
+        "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", src,
+        "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn",
+        # H.264 in yuv420p needs even dimensions
+        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k",
+        "-movflags", "+faststart",
+        dst,
+    ]
+
+
+def run_with_progress(cmd, output_seconds, on_progress=None, should_cancel=None):
+    """Run a command from build_gif_command or build_clip_command, reporting
+    progress in 0..1. The output file is the last argument.
 
     Returns None on success, "cancelled" if cancelled, or an error message.
     """

@@ -73,6 +73,7 @@ class GifMakerApp:
         self.speed = tk.DoubleVar(value=1.0)
         self.colors = tk.IntVar(value=256)
         self.loop = tk.BooleanVar(value=True)
+        self.show_folder = tk.BooleanVar(value=False)
         self.sound = tk.BooleanVar(value=True)
         self.status = tk.StringVar(value="Open a video to get started.")
 
@@ -98,6 +99,7 @@ class GifMakerApp:
         top = ttk.Frame(main)
         top.pack(fill="x")
         ttk.Button(top, text="Open video...", command=self.open_video).pack(side="left")
+        ttk.Button(top, text="Clear", command=self.clear_video).pack(side="left", padx=(6, 0))
         self.file_label = ttk.Label(top, text="No video loaded", foreground="#666")
         self.file_label.pack(side="left", padx=10)
 
@@ -171,8 +173,13 @@ class GifMakerApp:
         bottom.pack(fill="x", pady=(8, 0))
         self.make_btn = ttk.Button(bottom, text="Make GIF...", command=self.make_gif)
         self.make_btn.pack(side="left")
+        self.video_btn = ttk.Button(bottom, text="Save clip as video...",
+                                    command=self.save_clip_video)
+        self.video_btn.pack(side="left", padx=(6, 0))
         self.cancel_btn = ttk.Button(bottom, text="Cancel", command=self.cancel, state="disabled")
         self.cancel_btn.pack(side="left", padx=6)
+        ttk.Checkbutton(bottom, text="Show folder after saving",
+                        variable=self.show_folder).pack(side="right")
         self.progress = ttk.Progressbar(bottom, maximum=1.0)
         self.progress.pack(side="left", fill="x", expand=True, padx=6)
         ttk.Label(main, textvariable=self.status, foreground="#444").pack(fill="x", pady=(6, 0))
@@ -254,6 +261,39 @@ class GifMakerApp:
             self.width.set(0)
         self.status.set("Scrub to the part you want, set Start and End, then click Make GIF.")
         self._seek(0.0)
+
+    def clear_video(self):
+        """Close the current video and put the window back as it was at startup."""
+        if self.busy:
+            self.status.set("Wait for the save to finish (or cancel it) before clearing.")
+            return
+        self.stop_playback()
+        self.video_token += 1  # stops the thumbnail pass and drops pending frames
+        if self.settle_job:
+            self.root.after_cancel(self.settle_job)
+            self.settle_job = None
+        self.video_path = None
+        self.duration = 0.0
+        self.video_fps = 0.0
+        self.video_width = self.video_height = 0
+        self.has_audio = False
+        self.transform = dict(NO_TRANSFORM)
+        self.thumbs = []
+        self.thumbs_done = False
+        self.frame_want = None
+        self.shown_t = None
+        self.preview_image = None
+        self.canvas.itemconfig(self.canvas_img, image="")
+        self.canvas.itemconfig(self.canvas_text, text="Open a video, or drag and drop one here.")
+        self.file_label.config(text="No video loaded", foreground="#666")
+        self.sound_check.config(state="normal")
+        self.position.set(0.0)
+        self.pos_label.config(text=ff.format_time(0))
+        self.start_text.set(ff.format_time(0))
+        self.end_text.set(ff.format_time(0))
+        self.timeline.set_duration(0)
+        self.progress.config(value=0)
+        self.status.set("Open a video to get started.")
 
     # ----------------------------------------------------------- preview
     # While dragging, the preview shows cached keyframe thumbnails instantly (or a
@@ -462,6 +502,8 @@ class GifMakerApp:
             messagebox.showerror("Snapshot failed", err[-1500:])
         else:
             self.status.set(f"Saved snapshot {dst}")
+            if self.show_folder.get():
+                show_in_folder(dst)
 
     def step(self, delta):
         if not self.video_path:
@@ -608,22 +650,59 @@ class GifMakerApp:
             title="Save GIF as", defaultextension=".gif", initialfile=default,
             initialdir=os.path.dirname(self.video_path),
             filetypes=[("GIF image", "*.gif")])
-        if not dst:
+        if not dst or self._is_source(dst):
             return
 
         cmd = ff.build_gif_command(self.ffmpeg, self.video_path, dst, start, end,
                                    settings["fps"], settings["width"], speed, colors,
                                    self.loop.get(), pre_vf=ff.transform_filters(**transform))
-        out_seconds = (end - start) / speed
+        self._run(cmd, (end - start) / speed, dst, "GIF")
+
+    # ------------------------------------------------------------- video
+    def save_clip_video(self):
+        """Save the start..end section as a new video file, with its sound."""
+        if self.busy:
+            return
+        if not self.video_path:
+            messagebox.showinfo("GifMaker", "Open a video first.")
+            return
+        rng = self._valid_range()
+        if not rng:
+            return
+        start, end = rng
+        self.stop_playback()
+        base = os.path.splitext(os.path.basename(self.video_path))[0]
+        dst = filedialog.asksaveasfilename(
+            title="Save clip as video", defaultextension=".mp4",
+            initialfile=f"{base}_{start:.1f}-{end:.1f}.mp4",
+            initialdir=os.path.dirname(self.video_path),
+            filetypes=[("MP4 video", "*.mp4")])
+        if not dst or self._is_source(dst):
+            return
+        cmd = ff.build_clip_command(self.ffmpeg, self.video_path, dst, start, end)
+        self._run(cmd, end - start, dst, "Video")
+
+    # -------------------------------------------------------------- save
+    def _is_source(self, dst):
+        """Refuse to write over the video being read (ffmpeg would destroy it)."""
+        same = os.path.normcase(os.path.abspath(dst)) == os.path.normcase(
+            os.path.abspath(self.video_path))
+        if same:
+            messagebox.showerror("GifMaker", "Choose a different file name: that's the video "
+                                             "you're making it from.")
+        return same
+
+    def _run(self, cmd, out_seconds, dst, what):
+        """Run an ffmpeg save in the background with progress and Cancel."""
         self._set_busy(True)
-        self.status.set("Making GIF...")
+        self.status.set(f"Saving {what.lower()}...")
 
         def progress(frac):
             self.root.after(0, lambda: self.progress.config(value=frac))
 
         def work():
-            err = ff.make_gif(cmd, out_seconds, progress, lambda: self.cancel_requested)
-            self.root.after(0, lambda: self._done(err, dst))
+            err = ff.run_with_progress(cmd, out_seconds, progress, lambda: self.cancel_requested)
+            self.root.after(0, lambda: self._done(err, dst, what))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -635,22 +714,23 @@ class GifMakerApp:
         self.busy = busy
         self.cancel_requested = False
         self.make_btn.config(state="disabled" if busy else "normal")
+        self.video_btn.config(state="disabled" if busy else "normal")
         self.cancel_btn.config(state="normal" if busy else "disabled")
         self.progress.config(value=0)
 
-    def _done(self, err, dst):
+    def _done(self, err, dst, what):
         self._set_busy(False)
         if err == "cancelled":
             self.status.set("Cancelled.")
             return
         if err:
             self.status.set("Failed.")
-            messagebox.showerror("GIF failed", err[-1500:])
+            messagebox.showerror(f"{what} failed", err[-1500:])
             return
         size_mb = os.path.getsize(dst) / (1024 * 1024)
         self.progress.config(value=1.0)
         self.status.set(f"Saved {dst}  ({size_mb:.2f} MB)")
-        if messagebox.askyesno("Done", f"GIF saved ({size_mb:.2f} MB).\n\nShow it in its folder?"):
+        if self.show_folder.get():
             show_in_folder(dst)
 
 

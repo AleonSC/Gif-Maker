@@ -36,7 +36,7 @@ def run(report_path):
                         "testsrc2=size=320x180:rate=30", "-t", "2", "-pix_fmt", "yuv420p", src],
                        check=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         vf = ff.transform_filters(90, True, (0.1, 0.1, 0.5, 0.5))
-        err = ff.make_gif(ff.build_gif_command(exe, src, dst, 0.5, 1.5, 10, 0, pre_vf=vf), 1.0)
+        err = ff.run_with_progress(ff.build_gif_command(exe, src, dst, 0.5, 1.5, 10, 0, pre_vf=vf), 1.0)
         assert err is None, err
         return f"{os.path.getsize(dst)} bytes"
 
