@@ -230,7 +230,7 @@ class Tile(tk.Frame):
             start = self.position
             if not self.loop_start <= start < self.loop_end - 0.05:
                 start = self.loop_start
-        self.player.volume = self.owner.app.volume.get() / 100
+        self.player.volume, self.player.boost = self.owner.app.gain_settings()
         self.player.start(self.path, start, self._frame_size(), min(self.info.fps or 30, MAX_FPS),
                           end=self.loop_end, sound=self.info.has_audio and self.sound)
         self.play_btn.config(text="❚❚")

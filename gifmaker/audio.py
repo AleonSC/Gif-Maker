@@ -27,7 +27,7 @@ class AudioOutput:
     """
 
     def __init__(self, ffmpeg, path, start, get_gain, speed=1.0):
-        self.get_gain = get_gain  # volume 0..1 (0 = muted), read on every audio block
+        self.get_gain = get_gain  # 0 = muted, 1 = as recorded, more = boosted; read every block
         self.buf = bytearray()
         self.lock = threading.Lock()
         self.eof = False
@@ -68,10 +68,14 @@ class AudioOutput:
         gain = self.get_gain()
         if gain <= 0.0:
             chunk = bytes(len(chunk))
-        elif gain < 0.999:
+        elif abs(gain - 1.0) > 0.001:
             samples = array("h")
             samples.frombytes(chunk)
-            chunk = array("h", [int(v * gain) for v in samples]).tobytes()
+            if gain < 1.0:
+                chunk = array("h", [int(v * gain) for v in samples]).tobytes()
+            else:  # boosted: clip what would go past the loudest a sample can be
+                chunk = array("h", [min(32767, max(-32768, int(v * gain)))
+                                    for v in samples]).tobytes()
         outdata[:len(chunk)] = chunk
         if len(chunk) < n:
             outdata[len(chunk):] = bytes(n - len(chunk))

@@ -35,7 +35,7 @@ the orange strip under the timeline (click one to change it with the markers, th
 saves each section as its own numbered video.
 
 The speed box and **Vol** slider next to the time set the playback speed (the sound keeps its
-pitch) and volume. **Delete file...** (or the Delete key) deletes the open video, after
+pitch) and volume; **Boost** makes quiet videos up to 4x louder (very loud parts may distort). **Delete file...** (or the Delete key) deletes the open video, after
 asking, to the Recycle Bin, and opens the next one in the folder.
 
 The **‹** and **›** buttons beside the video (or Page Up / Page Down) open the previous or

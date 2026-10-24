@@ -274,7 +274,7 @@ class ExportDialog(tk.Toplevel):
         if self.mode in ("gif", "video"):
             start, end = self._sections()[self.section]
             self.player.muted = not self.app.sound.get()
-            self.player.volume = self.app.volume.get() / 100
+            self.player.volume, self.player.boost = self.app.gain_settings()
             self.player.start(self.app.video_path, start, (dw, dh), self.fps,
                               end=end, pre_vf=rot, speed=self.speed, sound=self.sound)
         else:

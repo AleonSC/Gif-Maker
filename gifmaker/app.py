@@ -29,6 +29,7 @@ PREVIEW_W, PREVIEW_H = 720, 405
 MAX_GIF_SECONDS = 30
 MAX_PLAYBACK_FPS = 30
 PLAY_SPEEDS = (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0)
+MAX_BOOST = 400  # percent
 MAX_THUMBNAILS = 300  # cached keyframes for instant scrubbing (~65 MB at most)
 SCRUB_SETTLE_MS = 120  # fetch the exact frame once the slider rests this long
 VIDEO_TYPES = [
@@ -123,6 +124,7 @@ class GifMakerApp:
         self.sound = tk.BooleanVar(value=True)
         self.play_speed = tk.StringVar(value="1\u00D7")
         self.volume = tk.DoubleVar(value=100)
+        self.boost = tk.DoubleVar(value=100)  # percent; not saved, so it never starts loud
         self.status = tk.StringVar(value="Open a video to get started.")
 
         self._build_ui()
@@ -213,9 +215,17 @@ class GifMakerApp:
         Tooltip(speed, "Playback speed (sound keeps its pitch)")
         ttk.Label(scrub, text="Vol").pack(side="left", padx=(10, 2))
         vol = ttk.Scale(scrub, from_=0, to=100, variable=self.volume, length=90,
-                        command=lambda v: setattr(self.player, "volume", float(v) / 100))
+                        command=lambda v: self._volume_changed())
         vol.pack(side="left")
         Tooltip(vol, "Volume")
+        ttk.Label(scrub, text="Boost").pack(side="left", padx=(10, 2))
+        boost = ttk.Scale(scrub, from_=100, to=MAX_BOOST, variable=self.boost, length=70,
+                          command=lambda v: self._volume_changed())
+        boost.pack(side="left")
+        self.boost_label = ttk.Label(scrub, text="100%", width=5)
+        self.boost_label.pack(side="left", padx=(2, 0))
+        Tooltip(boost, f"Make quiet videos louder, up to {MAX_BOOST}%. "
+                       "Loud parts may distort when boosted a lot.")
 
         step = self.play_bar = ttk.Frame(main)
         step.pack(pady=4)
@@ -484,6 +494,21 @@ class GifMakerApp:
             self.shown_t = None
             self._settle()
 
+    def gain_settings(self):
+        """(volume 0..1, boost 1..4) for every player in the app."""
+        return self.volume.get() / 100, self.boost.get() / 100
+
+    def _volume_changed(self):
+        """Apply the Vol and Boost sliders straight away to everything playing."""
+        volume, boost = self.gain_settings()
+        self.boost_label.config(text=f"{boost * 100:.0f}%")
+        players = [self.player]
+        if self.grid_window is not None:
+            players += [tile.player for tile in self.grid_window.tiles]
+        players += [w.player for w in self.root.winfo_children() if isinstance(w, ExportDialog)]
+        for player in players:
+            player.volume, player.boost = volume, boost
+
     def _play_speed(self):
         try:
             return float(self.play_speed.get().rstrip("\u00D7"))
@@ -704,7 +729,7 @@ class GifMakerApp:
         size = self._frame_size()
         fps = min(self.video_fps, MAX_PLAYBACK_FPS)
         self.player.muted = not self.sound.get()
-        self.player.volume = self.volume.get() / 100
+        self.player.volume, self.player.boost = self.gain_settings()
         self.player.start(self.video_path, start, size, fps, end=end,
                           speed=self._play_speed(), sound=self.has_audio)
         if self.has_audio and self.player.no_sound_device:

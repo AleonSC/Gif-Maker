@@ -25,6 +25,7 @@ class Player:
         self.end = None  # video time to stop at; may be changed while playing
         self.muted = False  # read by the audio thread
         self.volume = 1.0  # 0..1, read by the audio thread
+        self.boost = 1.0  # 1..4 multiplies the volume to make quiet videos louder
         self.no_sound_device = False  # set if sound was wanted but couldn't play
         self._token = 0
         self._proc = None
@@ -63,7 +64,7 @@ class Player:
 
     def _gain(self):
         # Squared so the slider feels even to the ear (loudness isn't linear).
-        return 0.0 if self.muted else self.volume ** 2
+        return 0.0 if self.muted else self.volume ** 2 * self.boost
 
     def stop(self):
         if not self.playing:
