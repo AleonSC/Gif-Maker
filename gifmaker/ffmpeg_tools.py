@@ -254,12 +254,14 @@ def build_clip_command(ffmpeg, src, dst, sections, has_audio, pre_vf=""):
     for i, (start, end) in enumerate(sections):
         length = end - start
         cmd += ["-ss", f"{start:.3f}", "-t", f"{length:.3f}", "-i", src]
-        graph.append(f"[{i}:v:0]trim=end={length:.3f},setpts=PTS-STARTPTS[v{i}]")
+        # Timestamps are kept relative to the cut (not reset to the first whole frame)
+        # so each piece's picture and sound end together and joins don't drift.
+        graph.append(f"[{i}:v:0]trim=end={length:.3f}[v{i}]")
         joined += f"[v{i}]"
         if has_audio:
             # Pad or trim each piece's sound to the piece's exact length, so the
             # sound can't drift out of step with the picture across the joins.
-            graph.append(f"[{i}:a:0]apad,atrim=end={length:.3f},asetpts=PTS-STARTPTS[a{i}]")
+            graph.append(f"[{i}:a:0]apad,atrim=end={length:.3f}[a{i}]")
             joined += f"[a{i}]"
     audio = 1 if has_audio else 0
     graph.append(f"{joined}concat=n={len(sections)}:v=1:a={audio}[vj]" + ("[aj]" if audio else ""))
@@ -317,11 +319,16 @@ def run_with_progress(cmd, output_seconds, on_progress=None, should_cancel=None)
     return None
 
 
-def fit_size(width, height, max_w, max_h):
-    """Scale (width, height) down to fit in max_w x max_h, keeping even sizes."""
+def fit_size(width, height, max_w, max_h, upscale=False):
+    """Scale (width, height) to fit in max_w x max_h, keeping even sizes.
+
+    Only scales down unless upscale is set.
+    """
     if width <= 0 or height <= 0:
         return max_w, max_h
-    scale = min(1.0, max_w / width, max_h / height)
+    scale = min(max_w / width, max_h / height)
+    if not upscale:
+        scale = min(1.0, scale)
     w = max(2, int(width * scale) // 2 * 2)
     h = max(2, int(height * scale) // 2 * 2)
     return w, h

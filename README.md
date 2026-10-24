@@ -28,6 +28,10 @@ a video, set the markers and click **Add section** for each part: the sections a
 the orange strip under the timeline (click one to change it with the markers, then
 **Done editing**), and **Save video...** joins them in time order and cuts out the rest.
 
+The **‹** and **›** buttons beside the video (or Page Up / Page Down) open the previous or
+next video in the same folder. **⛶** on the play bar (or F11, or double-clicking the video)
+shows the video fullscreen with the timeline and play bar underneath; Esc goes back.
+
 **Clear** closes the current video so you can start over, and **Show folder after
 saving** opens Explorer on each file you save.
 

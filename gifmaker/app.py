@@ -3,12 +3,13 @@
 import bisect
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
 import tkinter as tk
 from operator import itemgetter
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, font, messagebox, ttk
 
 from . import ffmpeg_tools as ff
 from .export_dialog import ExportDialog
@@ -30,12 +31,16 @@ VIDEO_TYPES = [
     ("All files", "*.*"),
 ]
 NO_TRANSFORM = {"rotate": 0, "flip": False, "crop": (0.0, 0.0, 1.0, 1.0)}
+VIDEO_EXTENSIONS = {pattern[1:] for pattern in VIDEO_TYPES[0][1].split()}
 # Keyboard shortcuts are ignored while one of these has focus.
 _NO_SHORTCUT_WIDGETS = (ttk.Entry, tk.Entry, ttk.Combobox, ttk.Spinbox, ttk.Button, ttk.Checkbutton)
 
 
 class Tooltip:
-    """Shows a small hint next to a widget while the mouse is over it."""
+    """Shows a small hint next to a widget while the mouse is over it.
+
+    text can be a string or a function returning one (worked out on hover).
+    """
 
     def __init__(self, widget, text):
         self.widget, self.text, self.tip = widget, text, None
@@ -49,7 +54,8 @@ class Tooltip:
         self.tip = tk.Toplevel(self.widget)
         self.tip.wm_overrideredirect(True)
         self.tip.wm_geometry(f"+{x}+{y}")
-        tk.Label(self.tip, text=self.text, background="#ffffe0", relief="solid",
+        text = self.text() if callable(self.text) else self.text
+        tk.Label(self.tip, text=text, background="#ffffe0", relief="solid",
                  borderwidth=1, padx=6, pady=2).pack()
 
     def _hide(self, _event):
@@ -87,6 +93,8 @@ class GifMakerApp:
         self.settle_job = None
         self.busy = False
         self.cancel_requested = False
+        self.fullscreen = False
+        self.view_w, self.view_h = PREVIEW_W, PREVIEW_H  # size of the video area
 
         self.player = Player(root, ffmpeg, self._on_play_frame, self._on_play_end)
         self.play_clip = False  # looping the start..end range rather than playing on
@@ -121,7 +129,7 @@ class GifMakerApp:
     # ---------------------------------------------------------------- UI
     def _build_ui(self):
         pad = {"padx": 8, "pady": 4}
-        main = ttk.Frame(self.root, padding=10)
+        main = self.main = ttk.Frame(self.root, padding=10)
         main.pack(fill="both", expand=True)
 
         top = ttk.Frame(main)
@@ -131,15 +139,29 @@ class GifMakerApp:
         self.file_label = ttk.Label(top, text="No video loaded", foreground="#666")
         self.file_label.pack(side="left", padx=10)
 
-        self.canvas = tk.Canvas(main, width=PREVIEW_W, height=PREVIEW_H,
+        view = ttk.Frame(main)
+        view.pack(pady=8)
+        nav_font = font.nametofont("TkDefaultFont").copy()
+        nav_font.configure(size=20, weight="bold")
+        ttk.Style(self.root).configure("Nav.TButton", font=nav_font, padding=(2, 0))
+        self.back_btn = ttk.Button(view, text="\u2039", width=2, style="Nav.TButton",
+                                   command=lambda: self.open_neighbour(-1))
+        self.back_btn.pack(side="left", fill="y", padx=(0, 4))
+        Tooltip(self.back_btn, lambda: self._neighbour_tip(-1))
+        self.canvas = tk.Canvas(view, width=PREVIEW_W, height=PREVIEW_H,
                                 bg="#111", highlightthickness=0)
-        self.canvas.pack(pady=8)
+        self.canvas.pack(side="left")
+        self.canvas.bind("<Double-Button-1>", self.toggle_fullscreen)
+        self.next_btn = ttk.Button(view, text="\u203A", width=2, style="Nav.TButton",
+                                   command=lambda: self.open_neighbour(1))
+        self.next_btn.pack(side="left", fill="y", padx=(4, 0))
+        Tooltip(self.next_btn, lambda: self._neighbour_tip(1))
         self.canvas_text = self.canvas.create_text(
             PREVIEW_W // 2, PREVIEW_H // 2, fill="#888",
             text="Open a video, or drag and drop one here.")
         self.canvas_img = self.canvas.create_image(PREVIEW_W // 2, PREVIEW_H // 2)
 
-        scrub = ttk.Frame(main)
+        scrub = self.scrub_bar = ttk.Frame(main)
         scrub.pack(fill="x")
         self.timeline = Timeline(scrub, on_seek=self._on_drag, on_seek_end=self._settle,
                                  on_marker=self._on_marker, on_section=self._select_section)
@@ -148,7 +170,7 @@ class GifMakerApp:
         self.pos_label = ttk.Label(scrub, text="0:00.000", width=12, anchor="e")
         self.pos_label.pack(side="left", padx=(8, 0))
 
-        step = ttk.Frame(main)
+        step = self.play_bar = ttk.Frame(main)
         step.pack(pady=4)
         self.play_btn = ttk.Button(step, text="\u25B6 Play", width=9, command=self.toggle_play)
         self.play_btn.pack(side="left", padx=2)
@@ -173,6 +195,9 @@ class GifMakerApp:
                        command=lambda d=delta: self.step(d)).pack(side="left", padx=1)
         ttk.Button(step, text="Save snapshot...",
                    command=self.save_snapshot).pack(side="left", padx=(12, 2))
+        fs = ttk.Button(step, text="\u26F6", width=3, command=self.toggle_fullscreen)
+        fs.pack(side="left", padx=(6, 0))
+        Tooltip(fs, "Fullscreen (F11 or double-click the video; Esc to leave)")
 
         rng = ttk.LabelFrame(main, text="Clip range  (drag the green and red markers, "
                                         "or type seconds or m:ss.sss)", padding=6)
@@ -231,13 +256,22 @@ class GifMakerApp:
                         variable=self.show_folder).pack(side="right")
         self.progress = ttk.Progressbar(bottom, maximum=1.0)
         self.progress.pack(side="left", fill="x", expand=True, padx=6)
-        ttk.Label(main, textvariable=self.status, foreground="#444").pack(fill="x", pady=(6, 0))
+        status = ttk.Label(main, textvariable=self.status, foreground="#444")
+        status.pack(fill="x", pady=(6, 0))
+        # Hidden in fullscreen, which keeps just the video, timeline and play bar.
+        self._windowed_only = [top, rng, opts, bottom, status]
+        self._rows = [(w, w.pack_info()) for w in main.pack_slaves()]
 
         self.root.bind("<space>", lambda e: self._key_set(e, self.toggle_play))
         self.root.bind("<Left>", lambda e: self._key_step(e, "-f"))
         self.root.bind("<Right>", lambda e: self._key_step(e, "+f"))
         self.root.bind("<bracketleft>", lambda e: self._key_set(e, self.set_start))
         self.root.bind("<bracketright>", lambda e: self._key_set(e, self.set_end))
+        self.root.bind("<Prior>", lambda e: self._key_set(e, lambda: self.open_neighbour(-1)))
+        self.root.bind("<Next>", lambda e: self._key_set(e, lambda: self.open_neighbour(1)))
+        self.root.bind("<F11>", self.toggle_fullscreen)
+        self.root.bind("<Escape>", lambda e: self.fullscreen and self.toggle_fullscreen())
+        self._update_nav()
 
     # ------------------------------------------------------ drag & drop
     def _enable_drop(self):
@@ -285,6 +319,11 @@ class GifMakerApp:
         path = path or filedialog.askopenfilename(title="Open video", filetypes=VIDEO_TYPES)
         if not path:
             return
+        if self.sections and not messagebox.askyesno(
+                "Open another video",
+                f"Opening another video clears your {len(self.sections)} "
+                f"section{'s' if len(self.sections) > 1 else ''}. Open it anyway?"):
+            return
         try:
             info = ff.probe(self.ffmpeg, path)
         except Exception as e:
@@ -310,7 +349,97 @@ class GifMakerApp:
         if w and w < self.width.get():
             self.width.set(0)
         self.status.set("Scrub to the part you want, set Start and End, then click Make GIF.")
+        self._update_nav()
         self._seek(0.0)
+
+    # ------------------------------------------------- folder navigation
+    def _folder_videos(self):
+        """Videos in the current video's folder, in Explorer-like (natural) order."""
+        folder = os.path.dirname(os.path.abspath(self.video_path))
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            return []
+
+        def natural(name):  # "clip 2" before "clip 10"
+            return [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", name.lower())]
+
+        names = [n for n in names if os.path.splitext(n)[1].lower() in VIDEO_EXTENSIONS
+                 and os.path.isfile(os.path.join(folder, n))]
+        return [os.path.join(folder, n) for n in sorted(names, key=natural)]
+
+    def _neighbour(self, step):
+        """The video `step` places away in the folder (-1 back, 1 next), or None."""
+        if not self.video_path:
+            return None
+        files = self._folder_videos()
+        here = os.path.normcase(os.path.abspath(self.video_path))
+        keys = [os.path.normcase(f) for f in files]
+        if here not in keys:
+            return None
+        i = keys.index(here) + step
+        return files[i] if 0 <= i < len(files) else None
+
+    def _neighbour_tip(self, step):
+        path = self._neighbour(step)
+        if path:
+            return f"{'Next' if step > 0 else 'Previous'}: {os.path.basename(path)}  (Page {'Down' if step > 0 else 'Up'})"
+        return "No more videos in this folder" if self.video_path else "Open a video first"
+
+    def open_neighbour(self, step):
+        if self.busy:
+            self.status.set("Wait for the save to finish (or cancel it) first.")
+            return
+        path = self._neighbour(step)
+        if path:
+            self.open_video(path)
+        elif self.video_path:
+            self.status.set(f"This is the {'last' if step > 0 else 'first'} video in the folder.")
+
+    def _update_nav(self):
+        for button, step in ((self.back_btn, -1), (self.next_btn, 1)):
+            button.config(state="normal" if self._neighbour(step) else "disabled")
+
+    # -------------------------------------------------------- fullscreen
+    def toggle_fullscreen(self, _event=None):
+        self.fullscreen = not self.fullscreen
+        if self.fullscreen:
+            for widget in self._windowed_only:
+                widget.pack_forget()
+            self.root.attributes("-fullscreen", True)
+            self.root.update_idletasks()
+            # The video gets the screen, less the timeline and play bar kept below it.
+            w = self.root.winfo_screenwidth() - 2 * self.back_btn.winfo_reqwidth() - 40
+            h = (self.root.winfo_screenheight() - self.scrub_bar.winfo_reqheight()
+                 - self.play_bar.winfo_reqheight() - 50)
+            self._resize_view(w, h)
+        else:
+            self.root.attributes("-fullscreen", False)
+            for widget, _ in self._rows:  # re-pack every row in its original order
+                widget.pack_forget()
+            for widget, packing in self._rows:
+                widget.pack(packing)
+            self._resize_view(PREVIEW_W, PREVIEW_H)
+
+    def _resize_view(self, w, h):
+        self.view_w, self.view_h = w, h
+        self.canvas.config(width=w, height=h)
+        self.canvas.coords(self.canvas_img, w // 2, h // 2)
+        self.canvas.coords(self.canvas_text, w // 2, h // 2)
+        if not self.video_path:
+            return
+        if self.playing:  # carry on playing at the new size
+            pos, end, clip = self.position.get(), self.player.end, self.play_clip
+            self.player.stop()
+            self._start_playback(pos, end, clip)
+        else:
+            self.shown_t = None
+            self._settle()
+
+    def _frame_size(self):
+        """Size to decode frames at: fit the view (filling it when fullscreen)."""
+        return ff.fit_size(self.video_width, self.video_height, self.view_w, self.view_h,
+                           upscale=self.fullscreen)
 
     def clear_video(self):
         """Close the current video and put the window back as it was at startup."""
@@ -344,6 +473,7 @@ class GifMakerApp:
         self.end_text.set(ff.format_time(0))
         self.timeline.set_duration(0)
         self.progress.config(value=0)
+        self._update_nav()
         self.status.set("Open a video to get started.")
 
     # ----------------------------------------------------------- preview
@@ -405,7 +535,8 @@ class GifMakerApp:
         if self.shown_t is None or abs(thumb_t - t) < abs(self.shown_t - t):
             w, h = self.thumb_size
             img = tk.PhotoImage(data=b"P6 %d %d 255\n" % (w, h) + data, format="ppm")
-            self._display(img.zoom(2), thumb_t)
+            fw, fh = self._frame_size()
+            self._display(img.zoom(max(1, min(fw // w, fh // h))), thumb_t)
         return True
 
     def _display(self, img, t):
@@ -422,10 +553,12 @@ class GifMakerApp:
     def _launch_frame(self):
         token, path, t, exact = self.frame_want
         self.frame_want = None
+        fw, fh = self._frame_size()
         self.frame_busy = True
 
         def work():
-            data = ff.grab_frame(self.ffmpeg, path, t, PREVIEW_W, PREVIEW_H, fast=not exact)
+            data = ff.grab_frame(self.ffmpeg, path, t, fw, fh, fast=not exact,
+                                 pre_vf=f"scale={fw}:{fh}")
             self.frame_queue.put((token, t, data))
 
         threading.Thread(target=work, daemon=True).start()
@@ -473,7 +606,7 @@ class GifMakerApp:
 
     def _start_playback(self, start, end, clip):
         self.play_clip = clip
-        size = ff.fit_size(self.video_width, self.video_height, PREVIEW_W, PREVIEW_H)
+        size = self._frame_size()
         fps = min(self.video_fps, MAX_PLAYBACK_FPS)
         self.player.muted = not self.sound.get()
         self.player.start(self.video_path, start, size, fps, end=end, sound=self.has_audio)
@@ -524,6 +657,8 @@ class GifMakerApp:
             messagebox.showinfo("GifMaker", "Open a video first.")
             return
         self.stop_playback()
+        if self.fullscreen:  # so the preview window isn't hidden behind the video
+            self.toggle_fullscreen()
         t = self.position.get()
         ExportDialog(self, "snapshot", self.transform,
                      lambda transform: self._save_snapshot(t, transform), time=t)
