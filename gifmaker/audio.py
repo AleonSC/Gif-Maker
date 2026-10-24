@@ -1,6 +1,7 @@
 """Audio playback for the preview, which also serves as the playback clock."""
 
 import threading
+from array import array
 import time
 
 from . import ffmpeg_tools as ff
@@ -25,8 +26,8 @@ class AudioOutput:
     the speakers, so video frames timed against it stay in sync with the sound.
     """
 
-    def __init__(self, ffmpeg, path, start, is_muted):
-        self.is_muted = is_muted
+    def __init__(self, ffmpeg, path, start, get_gain, speed=1.0):
+        self.get_gain = get_gain  # volume 0..1 (0 = muted), read on every audio block
         self.buf = bytearray()
         self.lock = threading.Lock()
         self.eof = False
@@ -40,7 +41,7 @@ class AudioOutput:
         # Open the device first so a failure here doesn't leave ffmpeg running.
         self.stream = sounddevice.RawOutputStream(
             samplerate=RATE, channels=CHANNELS, dtype="int16", callback=self._callback)
-        self.proc = ff.open_audio_stream(ffmpeg, path, start, RATE, CHANNELS)
+        self.proc = ff.open_audio_stream(ffmpeg, path, start, RATE, CHANNELS, speed)
         threading.Thread(target=self._read, daemon=True).start()
 
     def _read(self):
@@ -64,8 +65,13 @@ class AudioOutput:
             del self.buf[:len(chunk)]
             self.last_block = (self.frames_played / RATE, time_info.outputBufferDacTime)
             self.frames_played += len(chunk) // BYTES_PER_FRAME
-        if self.is_muted():
+        gain = self.get_gain()
+        if gain <= 0.0:
             chunk = bytes(len(chunk))
+        elif gain < 0.999:
+            samples = array("h")
+            samples.frombytes(chunk)
+            chunk = array("h", [int(v * gain) for v in samples]).tobytes()
         outdata[:len(chunk)] = chunk
         if len(chunk) < n:
             outdata[len(chunk):] = bytes(n - len(chunk))
@@ -73,12 +79,16 @@ class AudioOutput:
     def start(self):
         """Start the sound once a little audio is buffered (or the track has ended)."""
         deadline = time.monotonic() + 2.0
-        while (not self.eof and time.monotonic() < deadline
+        while (not self.eof and not self.closed and time.monotonic() < deadline
                and len(self.buf) < PREBUFFER * RATE * BYTES_PER_FRAME):
             time.sleep(0.005)
-        self.stream.start()
+        with self.close_lock:  # never start a stream that close() has shut (or is shutting)
+            if not self.closed:
+                self.stream.start()
 
     def clock(self):
+        if self.closed:  # the device is gone; just report where we got to
+            return self.last_t[0]
         if self.wall_base is not None:
             return self.wall_base[0] + time.monotonic() - self.wall_base[1]
         with self.lock:
@@ -108,20 +118,20 @@ class AudioOutput:
             if self.closed:
                 return
             self.closed = True
-        try:
-            self.stream.abort()
-            self.stream.close()
-        except Exception:
-            pass
+            try:
+                self.stream.abort()
+                self.stream.close()
+            except Exception:
+                pass
         self.proc.kill()
         self.proc.wait()
 
 
-def open_audio(ffmpeg, path, start, is_muted):
+def open_audio(ffmpeg, path, start, get_gain, speed=1.0):
     """Return an AudioOutput (call start() when ready), or None if there's no sound."""
     if sounddevice is None:
         return None
     try:
-        return AudioOutput(ffmpeg, path, start, is_muted)
+        return AudioOutput(ffmpeg, path, start, get_gain, speed)
     except Exception:
         return None

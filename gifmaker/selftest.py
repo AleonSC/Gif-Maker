@@ -43,9 +43,31 @@ def run(report_path):
     def gif():
         dst = os.path.join(os.path.dirname(src), "out.gif")
         vf = ff.transform_filters(90, True, (0.1, 0.1, 0.5, 0.5))
-        err = ff.run_with_progress(ff.build_gif_command(exe, src, dst, 0.5, 1.5, 10, 0, pre_vf=vf), 1.0)
+        err = ff.run_with_progress(ff.build_animation_command(exe, src, dst, 0.5, 1.5, 10, 0,
+                                                              pre_vf=vf), 1.0)
         assert err is None, err
         return f"{os.path.getsize(dst)} bytes"
+
+    def animations():
+        made = []
+        for fmt, (ext, _) in ff.ANIMATION_FORMATS.items():
+            if fmt not in ff.available_formats(exe):
+                raise AssertionError(f"this ffmpeg can't write {fmt}")
+            dst = os.path.join(os.path.dirname(src), "boomerang" + ext)
+            err = ff.run_with_progress(ff.build_animation_command(
+                exe, src, dst, 0.5, 1.0, 10, 160, fmt=fmt, direction="Boomerang"), 1.0)
+            assert err is None, f"{fmt}: {err}"
+            made.append(f"{fmt} {os.path.getsize(dst)} bytes")
+        return ", ".join(made)
+
+    def recycle_bin():
+        from . import files
+        path = os.path.join(tempfile.mkdtemp(), "delete me.txt")
+        with open(path, "w") as f:
+            f.write("GifMaker self-test")
+        files.send_to_trash(path)
+        assert not os.path.exists(path)
+        return files.where_it_goes()
 
     def video():
         dst = os.path.join(os.path.dirname(src), "clip.mp4")
@@ -71,7 +93,9 @@ def run(report_path):
     check("ffmpeg", ffmpeg)
     check("source video", source)
     check("gif", gif)
+    check("animations", animations)
     check("video clip", video)
+    check("delete to the Recycle Bin", recycle_bin)
     check("sound", sound)
     check("drag and drop", drag_and_drop)
     with open(report_path, "w", encoding="utf-8") as f:

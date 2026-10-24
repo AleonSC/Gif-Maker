@@ -4,6 +4,7 @@ import bisect
 import os
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -12,6 +13,7 @@ from operator import itemgetter
 from tkinter import filedialog, font, messagebox, ttk
 
 from . import ffmpeg_tools as ff
+from . import files
 from .export_dialog import ExportDialog
 from .player import Player
 from .timeline import Timeline
@@ -24,6 +26,7 @@ except ImportError:
 PREVIEW_W, PREVIEW_H = 720, 405
 MAX_GIF_SECONDS = 30
 MAX_PLAYBACK_FPS = 30
+PLAY_SPEEDS = (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0)
 MAX_THUMBNAILS = 300  # cached keyframes for instant scrubbing (~65 MB at most)
 SCRUB_SETTLE_MS = 120  # fetch the exact frame once the slider rests this long
 VIDEO_TYPES = [
@@ -108,8 +111,13 @@ class GifMakerApp:
         self.speed = tk.DoubleVar(value=1.0)
         self.colors = tk.IntVar(value=256)
         self.loop = tk.BooleanVar(value=True)
+        self.formats = ff.available_formats(ffmpeg)
+        self.anim_format = tk.StringVar(value="GIF")
+        self.direction = tk.StringVar(value="Forward")
         self.show_folder = tk.BooleanVar(value=False)
         self.sound = tk.BooleanVar(value=True)
+        self.play_speed = tk.StringVar(value="1\u00D7")
+        self.volume = tk.DoubleVar(value=100)
         self.status = tk.StringVar(value="Open a video to get started.")
 
         self._build_ui()
@@ -136,6 +144,9 @@ class GifMakerApp:
         top.pack(fill="x")
         ttk.Button(top, text="Open video...", command=self.open_video).pack(side="left")
         ttk.Button(top, text="Clear", command=self.clear_video).pack(side="left", padx=(6, 0))
+        delete = ttk.Button(top, text="Delete file...", command=self.delete_file)
+        delete.pack(side="left", padx=(6, 0))
+        Tooltip(delete, "Delete this video and open the next one in the folder  (Delete key)")
         self.file_label = ttk.Label(top, text="No video loaded", foreground="#666")
         self.file_label.pack(side="left", padx=10)
 
@@ -169,6 +180,16 @@ class GifMakerApp:
         self.position.trace_add("write", lambda *_: self.timeline.set_position(self.position.get()))
         self.pos_label = ttk.Label(scrub, text="0:00.000", width=12, anchor="e")
         self.pos_label.pack(side="left", padx=(8, 0))
+        speed = ttk.Combobox(scrub, textvariable=self.play_speed, width=6, state="readonly",
+                             values=[f"{v:g}\u00D7" for v in PLAY_SPEEDS])
+        speed.pack(side="left", padx=(10, 0))
+        speed.bind("<<ComboboxSelected>>", lambda e: self._restart_playback())
+        Tooltip(speed, "Playback speed (sound keeps its pitch)")
+        ttk.Label(scrub, text="Vol").pack(side="left", padx=(10, 2))
+        vol = ttk.Scale(scrub, from_=0, to=100, variable=self.volume, length=90,
+                        command=lambda v: setattr(self.player, "volume", float(v) / 100))
+        vol.pack(side="left")
+        Tooltip(vol, "Volume")
 
         step = self.play_bar = ttk.Frame(main)
         step.pack(pady=4)
@@ -228,7 +249,7 @@ class GifMakerApp:
         for var in (self.start_text, self.end_text, self.speed):
             var.trace_add("write", lambda *_: self._range_changed())
 
-        opts = ttk.LabelFrame(main, text="GIF options", padding=6)
+        opts = ttk.LabelFrame(main, text="Animation options", padding=6)
         opts.pack(fill="x", pady=6)
         ttk.Label(opts, text="FPS").grid(row=0, column=0, **pad)
         ttk.Spinbox(opts, from_=1, to=50, textvariable=self.fps, width=6).grid(row=0, column=1, **pad)
@@ -239,9 +260,23 @@ class GifMakerApp:
         ttk.Combobox(opts, textvariable=self.speed, width=5,
                      values=(0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0)).grid(row=0, column=5, **pad)
         ttk.Label(opts, text="Colors").grid(row=0, column=6, **pad)
-        ttk.Combobox(opts, textvariable=self.colors, width=5,
-                     values=(256, 128, 64, 32, 16)).grid(row=0, column=7, **pad)
+        self.colors_box = ttk.Combobox(opts, textvariable=self.colors, width=5,
+                                       values=(256, 128, 64, 32, 16))
+        self.colors_box.grid(row=0, column=7, **pad)
         ttk.Checkbutton(opts, text="Loop forever", variable=self.loop).grid(row=0, column=8, **pad)
+        ttk.Label(opts, text="Format").grid(row=1, column=0, **pad)
+        fmt = ttk.Combobox(opts, textvariable=self.anim_format, width=13, state="readonly",
+                           values=self.formats)
+        fmt.grid(row=1, column=1, columnspan=2, sticky="w", **pad)
+        fmt.bind("<<ComboboxSelected>>", lambda e: self._format_changed())
+        Tooltip(fmt, "WebP and animated PNG keep full colour and are often smaller than GIF; "
+                     "most browsers and chat apps show them")
+        ttk.Label(opts, text="Direction").grid(row=1, column=3, sticky="e", **pad)
+        direction = ttk.Combobox(opts, textvariable=self.direction, width=10, state="readonly",
+                                 values=ff.DIRECTIONS)
+        direction.grid(row=1, column=4, columnspan=2, sticky="w", **pad)
+        direction.bind("<<ComboboxSelected>>", lambda e: self._update_length())
+        Tooltip(direction, "Boomerang plays forward then backward, so it loops smoothly")
 
         bottom = ttk.Frame(main)
         bottom.pack(fill="x", pady=(8, 0))
@@ -269,6 +304,7 @@ class GifMakerApp:
         self.root.bind("<bracketright>", lambda e: self._key_set(e, self.set_end))
         self.root.bind("<Prior>", lambda e: self._key_set(e, lambda: self.open_neighbour(-1)))
         self.root.bind("<Next>", lambda e: self._key_set(e, lambda: self.open_neighbour(1)))
+        self.root.bind("<Delete>", lambda e: self._key_set(e, self.delete_file))
         self.root.bind("<F11>", self.toggle_fullscreen)
         self.root.bind("<Escape>", lambda e: self.fullscreen and self.toggle_fullscreen())
         self._update_nav()
@@ -429,12 +465,23 @@ class GifMakerApp:
         if not self.video_path:
             return
         if self.playing:  # carry on playing at the new size
-            pos, end, clip = self.position.get(), self.player.end, self.play_clip
-            self.player.stop()
-            self._start_playback(pos, end, clip)
+            self._restart_playback()
         else:
             self.shown_t = None
             self._settle()
+
+    def _play_speed(self):
+        try:
+            return float(self.play_speed.get().rstrip("\u00D7"))
+        except ValueError:
+            return 1.0
+
+    def _restart_playback(self):
+        """Pick up a new size or speed while playing, carrying on from the same place."""
+        if self.playing:
+            pos, end, clip = self.position.get(), self.player.end, self.play_clip
+            self.player.stop()
+            self._start_playback(pos, end, clip)
 
     def _frame_size(self):
         """Size to decode frames at: fit the view (filling it when fullscreen)."""
@@ -475,6 +522,40 @@ class GifMakerApp:
         self.progress.config(value=0)
         self._update_nav()
         self.status.set("Open a video to get started.")
+
+    def delete_file(self):
+        """Delete the open video (to the Recycle Bin on Windows) after asking."""
+        if not self.video_path:
+            return
+        if self.busy:
+            self.status.set("Wait for the save to finish (or cancel it) before deleting.")
+            return
+        path = self.video_path
+        message = f"Delete \u201c{os.path.basename(path)}\u201d?\n\n{files.where_it_goes()}"
+        if self.sections:
+            message += f"\n\nYour {len(self.sections)} section(s) will be lost too."
+        if not messagebox.askyesno("Delete file", message, icon="warning"):
+            return
+        after = self._neighbour(1) or self._neighbour(-1)
+        self.sections = []  # already confirmed, so don't ask again when opening the next one
+        self.clear_video()  # stops playback and everything else reading the file
+        self._delete_when_free(path, after, tries=15)
+
+    def _delete_when_free(self, path, after, tries):
+        # ffmpeg processes reading the file take a moment to exit, and Windows won't
+        # delete a file that's still open, so retry for a couple of seconds.
+        try:
+            files.send_to_trash(path)
+        except OSError as e:
+            if tries > 0 and os.path.exists(path):
+                self.root.after(150, lambda: self._delete_when_free(path, after, tries - 1))
+                return
+            messagebox.showerror("Couldn't delete", f"{os.path.basename(path)} wasn't deleted:\n{e}")
+            return
+        if after and os.path.exists(after):
+            self.open_video(after)
+        recycled = " (it's in the Recycle Bin)" if sys.platform == "win32" else ""
+        self.status.set(f"Deleted {os.path.basename(path)}{recycled}.")
 
     # ----------------------------------------------------------- preview
     # While dragging, the preview shows cached keyframe thumbnails instantly (or a
@@ -609,7 +690,9 @@ class GifMakerApp:
         size = self._frame_size()
         fps = min(self.video_fps, MAX_PLAYBACK_FPS)
         self.player.muted = not self.sound.get()
-        self.player.start(self.video_path, start, size, fps, end=end, sound=self.has_audio)
+        self.player.volume = self.volume.get() / 100
+        self.player.start(self.video_path, start, size, fps, end=end,
+                          speed=self._play_speed(), sound=self.has_audio)
         if self.has_audio and self.player.no_sound_device:
             self.status.set("No sound device found, so playing without sound.")
         if self.play_image is None:
@@ -661,7 +744,8 @@ class GifMakerApp:
             self.toggle_fullscreen()
         t = self.position.get()
         ExportDialog(self, "snapshot", self.transform,
-                     lambda transform: self._save_snapshot(t, transform), time=t)
+                     lambda transform, _choice, _rendered: self._save_snapshot(t, transform),
+                     time=t)
 
     def _save_snapshot(self, t, transform):
         self.transform = transform
@@ -847,69 +931,142 @@ class GifMakerApp:
             if speed <= 0:
                 raise ValueError
         except (ValueError, tk.TclError):
-            self.length_label.config(text="GIF length: ?", foreground="")
+            self.length_label.config(text="Animation length: ?", foreground="")
             return
-        gif_len = (end - start) / speed
-        text = f"GIF length: {gif_len:.2f}s  (max {MAX_GIF_SECONDS}s)"
+        direction = self.direction.get()
+        length = ff.animation_seconds(start, end, speed, direction)
+        text = f"Animation length: {length:.2f}s  (max {MAX_GIF_SECONDS}s)"
+        notes = []
         if speed != 1.0:
-            text = f"Clip {end - start:.2f}s at {speed:g}x speed \u2192 " + text
-        over = gif_len > MAX_GIF_SECONDS
+            notes.append(f"{speed:g}x speed")
+        if direction == "Boomerang":
+            notes.append("there and back")
+        if notes:
+            text = f"Clip {end - start:.2f}s, {', '.join(notes)} \u2192 " + text
+        over = length > MAX_GIF_SECONDS
         if over:
             text += "  \u2013 too long, shorten the clip or raise the speed"
         self.length_label.config(text=text, foreground="#c00" if over else "")
 
+    def _format_changed(self):
+        fmt = self.anim_format.get()
+        label = {"GIF": "GIF", "WebP": "WebP", "Animated PNG": "animated PNG"}[fmt]
+        self.make_btn.config(text=f"Make {label}...")
+        # Only GIFs have a limited palette.
+        self.colors_box.config(state="normal" if fmt == "GIF" else "disabled")
+
     # -------------------------------------------------------------- make
     def make_gif(self):
+        """Make an animation (GIF, WebP or PNG) of the markers or of each section."""
         if self.busy:
             return
         if not self.video_path:
             messagebox.showinfo("GifMaker", "Open a video first.")
             return
-        rng = self._valid_range()
-        if not rng:
-            return
-        start, end = rng
         try:
             fps = int(self.fps.get())
             width = int(float(self.width.get()))
             speed = float(self.speed.get())
             colors = int(self.colors.get())
         except (tk.TclError, ValueError):
-            messagebox.showerror("GifMaker", "Check the GIF options: they must be numbers.")
+            messagebox.showerror("GifMaker", "Check the animation options: they must be numbers.")
             return
         if not (1 <= fps <= 50 and width >= 0 and 0.1 <= speed <= 10 and 2 <= colors <= 256):
             messagebox.showerror(
                 "GifMaker",
                 "Options out of range:\nFPS 1-50, Width 0 or more, Speed 0.1-10, Colors 2-256.")
             return
-        if (end - start) / speed > MAX_GIF_SECONDS:
+        fmt, direction = self.anim_format.get(), self.direction.get()
+        what = {"GIF": "GIF", "WebP": "WebP", "Animated PNG": "animated PNG"}[fmt]
+        choices = []
+        rng = self._loop_range_quiet()
+        if rng:
+            choices.append(("The loop markers", [rng], False))
+        if self.sections:
+            sections = sorted(self.sections)
+            choices.append((f"Each section as its own {what} ({len(sections)})", sections, True))
+        if not choices:
+            self._valid_range()  # explains what's wrong with the markers
+            return
+        # Every animation has to fit the length limit.
+        fits = [c for c in choices
+                if all(ff.animation_seconds(*p, speed, direction) <= MAX_GIF_SECONDS for p in c[1])]
+        if fits and len(fits) < len(choices):
+            self.status.set(f"Some of what you marked is over {MAX_GIF_SECONDS} s, so it isn't "
+                            "offered: " + ", ".join(c[0] for c in choices if c not in fits) + ".")
+        choices = fits
+        if not choices:
             messagebox.showerror(
-                "GIF too long",
-                f"GIFs can be at most {MAX_GIF_SECONDS} seconds long; this one would be "
-                f"{(end - start) / speed:.1f} seconds.\n\n"
-                "Shorten the clip or raise the speed.")
+                "Too long",
+                f"Animations can be at most {MAX_GIF_SECONDS} seconds long (a boomerang counts "
+                "twice). Shorten the clip or sections, or raise the speed.")
             return
         self.stop_playback()
-        settings = dict(start=start, end=end, fps=fps, width=width, speed=speed)
-        ExportDialog(self, "gif", self.transform,
-                     lambda transform: self._save_gif(settings, colors, transform), **settings)
+        settings = dict(fps=fps, width=width, speed=speed, colors=colors, fmt=fmt,
+                        direction=direction, loop=self.loop.get())
 
-    def _save_gif(self, settings, colors, transform):
+        def render(transform, start, end, dst):
+            return ff.build_animation_command(
+                self.ffmpeg, self.video_path, dst, start, end, fps, width, speed, fmt,
+                direction, colors, settings["loop"], pre_vf=ff.transform_filters(**transform))
+
+        ExportDialog(self, "gif", self.transform,
+                     lambda transform, choice, rendered: self._save_animation(
+                         render, settings, choices[choice], transform, rendered),
+                     choices=choices, fps=fps, width=width, speed=speed, fmt=fmt,
+                     direction=direction, render=render)
+
+    def _loop_range_quiet(self):
+        """The marker range if it's usable, else None (without complaining)."""
+        try:
+            start, end = self._range()
+        except ValueError:
+            return None
+        end = min(end, self.duration)
+        return (start, end) if end > start else None
+
+    def _save_animation(self, render, settings, choice, transform, rendered):
         self.transform = transform
-        start, end, speed = settings["start"], settings["end"], settings["speed"]
+        _, sections, separate = choice
+        fmt = settings["fmt"]
+        ext, kind = ff.ANIMATION_FORMATS[fmt]
         base = os.path.splitext(os.path.basename(self.video_path))[0]
-        default = f"{base}_{start:.1f}-{end:.1f}.gif".replace(":", "-")
+        if separate:
+            default = f"{base}_section{ext}"
+        else:
+            default = f"{base}_{sections[0][0]:.1f}-{sections[0][1]:.1f}{ext}"
         dst = filedialog.asksaveasfilename(
-            title="Save GIF as", defaultextension=".gif", initialfile=default,
-            initialdir=os.path.dirname(self.video_path),
-            filetypes=[("GIF image", "*.gif")])
+            title=f"Save {kind} as" if not separate else f"Save {kind}s as (numbered)",
+            defaultextension=ext, initialfile=default,
+            initialdir=os.path.dirname(self.video_path), filetypes=[(kind, "*" + ext)])
         if not dst or self._is_source(dst):
             return
+        what = "GIF" if fmt == "GIF" else fmt
+        if rendered:  # the preview already made exactly this: just copy it
+            shutil.copyfile(rendered, dst)
+            self._done(None, [dst], what)
+            return
+        targets = self._numbered(dst, len(sections)) if separate else [dst]
+        if targets is None:
+            return
+        jobs = [(render(transform, s, e, path),
+                 ff.animation_seconds(s, e, settings["speed"], settings["direction"]), path)
+                for (s, e), path in zip(sections, targets)]
+        self._run(jobs, what)
 
-        cmd = ff.build_gif_command(self.ffmpeg, self.video_path, dst, start, end,
-                                   settings["fps"], settings["width"], speed, colors,
-                                   self.loop.get(), pre_vf=ff.transform_filters(**transform))
-        self._run(cmd, (end - start) / speed, dst, "GIF")
+    def _numbered(self, dst, count):
+        """'clip.gif' -> ['clip 1.gif', 'clip 2.gif', ...], asking before overwriting."""
+        stem, ext = os.path.splitext(dst)
+        paths = [f"{stem} {i}{ext}" for i in range(1, count + 1)]
+        existing = [p for p in paths if os.path.exists(p)]
+        if existing and not messagebox.askyesno(
+                "Replace files?",
+                f"{len(existing)} of these files already exist, e.g. "
+                f"{os.path.basename(existing[0])}. Replace them?"):
+            return None
+        if any(self._is_source(p) for p in paths):
+            return None
+        return paths
 
     # ------------------------------------------------------------- video
     def save_clip_video(self):
@@ -920,34 +1077,50 @@ class GifMakerApp:
             messagebox.showinfo("GifMaker", "Open a video first.")
             return
         if self.sections:
-            sections = ff.merge_sections(self.sections)
+            n = len(self.sections)
+            choices = [("Joined into one video", ff.merge_sections(self.sections), False),
+                       (f"Each section as its own video ({n})", sorted(self.sections), True)]
         else:
             rng = self._valid_range()
             if not rng:
                 return
-            sections = [rng]
+            choices = [("The loop markers", [rng], False)]
         self.stop_playback()
         ExportDialog(self, "video", self.transform,
-                     lambda transform: self._save_video(sections, transform),
-                     sections=sections, fps=min(self.video_fps, MAX_PLAYBACK_FPS),
+                     lambda transform, choice, _rendered: self._save_video(choices[choice], transform),
+                     choices=choices, fps=min(self.video_fps, MAX_PLAYBACK_FPS),
                      sound=self.has_audio)
 
-    def _save_video(self, sections, transform):
+    def _save_video(self, choice, transform):
         self.transform = transform
+        _, sections, separate = choice
         base = os.path.splitext(os.path.basename(self.video_path))[0]
-        if len(sections) == 1:
+        if separate:
+            name = f"{base}_section.mp4"
+        elif len(sections) == 1:
             name = f"{base}_{sections[0][0]:.1f}-{sections[0][1]:.1f}.mp4"
         else:
             name = f"{base}_edit.mp4"
         dst = filedialog.asksaveasfilename(
-            title="Save video as", defaultextension=".mp4", initialfile=name,
+            title="Save videos as (numbered)" if separate else "Save video as",
+            defaultextension=".mp4", initialfile=name,
             initialdir=os.path.dirname(self.video_path),
             filetypes=[("MP4 video", "*.mp4")])
         if not dst or self._is_source(dst):
             return
-        cmd = ff.build_clip_command(self.ffmpeg, self.video_path, dst, sections, self.has_audio,
-                                    pre_vf=ff.transform_filters(**transform))
-        self._run(cmd, sum(e - s for s, e in sections), dst, "Video")
+        vf = ff.transform_filters(**transform)
+        if separate:
+            targets = self._numbered(dst, len(sections))
+            if targets is None:
+                return
+            jobs = [(ff.build_clip_command(self.ffmpeg, self.video_path, path, [sec],
+                                           self.has_audio, pre_vf=vf), sec[1] - sec[0], path)
+                    for sec, path in zip(sections, targets)]
+        else:
+            jobs = [(ff.build_clip_command(self.ffmpeg, self.video_path, dst, sections,
+                                           self.has_audio, pre_vf=vf),
+                     sum(e - s for s, e in sections), dst)]
+        self._run(jobs, "Video")
 
     # -------------------------------------------------------------- save
     def _is_source(self, dst):
@@ -959,17 +1132,30 @@ class GifMakerApp:
                                              "you're making it from.")
         return same
 
-    def _run(self, cmd, out_seconds, dst, what):
-        """Run an ffmpeg save in the background with progress and Cancel."""
-        self._set_busy(True)
-        self.status.set(f"Saving {what.lower()}...")
+    def _run(self, jobs, what):
+        """Run ffmpeg saves one after another in the background, with progress and Cancel.
 
-        def progress(frac):
-            self.root.after(0, lambda: self.progress.config(value=frac))
+        jobs is a list of (command, output seconds, output path).
+        """
+        self._set_busy(True)
+        n = len(jobs)
+        self.status.set(f"Saving {what if what != 'Video' else 'video'}...")
 
         def work():
-            err = ff.run_with_progress(cmd, out_seconds, progress, lambda: self.cancel_requested)
-            self.root.after(0, lambda: self._done(err, dst, what))
+            done = []
+            err = None
+            for k, (cmd, seconds, dst) in enumerate(jobs):
+                if n > 1:
+                    self.root.after(0, lambda k=k: self.status.set(f"Saving {k + 1} of {n}..."))
+
+                def progress(frac, k=k):
+                    self.root.after(0, lambda: self.progress.config(value=(k + frac) / n))
+
+                err = ff.run_with_progress(cmd, seconds, progress, lambda: self.cancel_requested)
+                if err:
+                    break
+                done.append(dst)
+            self.root.after(0, lambda: self._done(err, done, what))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -985,20 +1171,25 @@ class GifMakerApp:
         self.cancel_btn.config(state="normal" if busy else "disabled")
         self.progress.config(value=0)
 
-    def _done(self, err, dst, what):
+    def _done(self, err, saved, what):
+        """Report how a save went; `saved` lists the files that were finished."""
         self._set_busy(False)
         if err == "cancelled":
-            self.status.set("Cancelled.")
+            self.status.set("Cancelled." + (f" {len(saved)} file(s) were saved first." if saved else ""))
             return
         if err:
             self.status.set("Failed.")
             messagebox.showerror(f"{what} failed", err[-1500:])
             return
-        size_mb = os.path.getsize(dst) / (1024 * 1024)
         self.progress.config(value=1.0)
-        self.status.set(f"Saved {dst}  ({size_mb:.2f} MB)")
+        size_mb = sum(os.path.getsize(p) for p in saved) / (1024 * 1024)
+        if len(saved) == 1:
+            self.status.set(f"Saved {saved[0]}  ({size_mb:.2f} MB)")
+        else:
+            self.status.set(f"Saved {len(saved)} files in {os.path.dirname(saved[0])}  "
+                            f"({size_mb:.2f} MB in all)")
         if self.show_folder.get():
-            show_in_folder(dst)
+            show_in_folder(saved[0])
 
 
 def show_in_folder(path):

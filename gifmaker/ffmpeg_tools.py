@@ -197,34 +197,75 @@ def iter_keyframes(ffmpeg, path, width, height, min_gap, should_stop):
         proc.wait()
 
 
-def build_gif_command(ffmpeg, src, dst, start, end, fps, width, speed=1.0,
-                      colors=256, loop=True, dither="sierra2_4a", pre_vf=""):
-    """Build the ffmpeg command line for a high-quality two-pass-palette GIF.
+# Animation output formats: name -> (file extension, file type label)
+ANIMATION_FORMATS = {
+    "GIF": (".gif", "GIF image"),
+    "WebP": (".webp", "Animated WebP"),
+    "Animated PNG": (".png", "Animated PNG"),
+}
+DIRECTIONS = ("Forward", "Reverse", "Boomerang")
+
+
+def animation_seconds(start, end, speed, direction):
+    """How long the finished animation runs."""
+    seconds = (end - start) / speed
+    return seconds * 2 if direction == "Boomerang" else seconds
+
+
+def build_animation_command(ffmpeg, src, dst, start, end, fps, width, speed=1.0,
+                            fmt="GIF", direction="Forward", colors=256, loop=True,
+                            pre_vf="", dither="sierra2_4a"):
+    """Build the ffmpeg command line for an animated GIF, WebP or PNG of start..end.
 
     pre_vf (e.g. a transform_filters() chain) is applied first. width 0 keeps
-    the size; otherwise the GIF is scaled down (never up) to that width.
+    the size; otherwise it's scaled down (never up) to that width. direction is
+    Forward, Reverse, or Boomerang (forward then back). GIFs use a palette made
+    for the clip (two-pass), which gives much better colours than the default.
     """
-    duration = end - start
     filters = [pre_vf]
     if speed != 1.0:
         filters.append(f"setpts=PTS/{speed}")
     filters.append(f"fps={fps}")
     if width > 0:
         filters.append(f"scale='min({width},iw)':-2:flags=lanczos")
-    filter_chain = chain(*filters)
-    graph = (
-        f"{filter_chain},split[a][b];"
-        f"[a]palettegen=max_colors={colors}:stats_mode=diff[p];"
-        f"[b][p]paletteuse=dither={dither}:diff_mode=rectangle"
-    )
+    graph = chain(*filters)
+    if direction == "Reverse":
+        graph += ",reverse"
+    elif direction == "Boomerang":
+        # The reversed copy skips its first frame, which is the forward clip's
+        # last one, so the turn-around doesn't stutter.
+        graph += (",split[fw][bw];[bw]reverse,trim=start_frame=1,setpts=PTS-STARTPTS[rv];"
+                  "[fw][rv]concat=n=2:v=1:a=0")
+    if fmt == "GIF":
+        graph += (",split[a][b];"
+                  f"[a]palettegen=max_colors={colors}:stats_mode=diff[p];"
+                  f"[b][p]paletteuse=dither={dither}:diff_mode=rectangle")
+        out = ["-loop", "0" if loop else "-1"]
+    elif fmt == "WebP":
+        out = ["-c:v", "libwebp_anim", "-lossless", "0", "-q:v", "80",
+               "-compression_level", "4", "-loop", "0" if loop else "1", "-f", "webp"]
+    elif fmt == "Animated PNG":
+        out = ["-f", "apng", "-plays", "0" if loop else "1", "-pred", "mixed"]
+    else:
+        raise ValueError(f"unknown format {fmt}")
     return [
         ffmpeg, "-hide_banner", "-y", "-nostats", "-loglevel", "error",
         "-progress", "pipe:1",
-        "-ss", f"{start:.3f}", "-t", f"{duration:.3f}", "-i", src,
-        "-filter_complex", graph,
-        "-loop", "0" if loop else "-1",
+        "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", src,
+        "-filter_complex", graph, "-an", *out,
         dst,
     ]
+
+
+def available_formats(ffmpeg):
+    """The ANIMATION_FORMATS this ffmpeg can write (WebP needs libwebp)."""
+    try:
+        encoders = subprocess.run([ffmpeg, "-hide_banner", "-encoders"], capture_output=True,
+                                  text=True, errors="replace", creationflags=_NO_WINDOW).stdout
+    except OSError:
+        return ["GIF"]
+    needs = {"GIF": " gif ", "WebP": " libwebp_anim ", "Animated PNG": " apng "}
+    return [f for f in ANIMATION_FORMATS if needs[f] in encoders] or ["GIF"]
 
 
 def merge_sections(sections):
@@ -279,7 +320,7 @@ def build_clip_command(ffmpeg, src, dst, sections, has_audio, pre_vf=""):
 
 
 def run_with_progress(cmd, output_seconds, on_progress=None, should_cancel=None):
-    """Run a command from build_gif_command or build_clip_command, reporting
+    """Run a command from build_animation_command or build_clip_command, reporting
     progress in 0..1. The output file is the last argument.
 
     Returns None on success, "cancelled" if cancelled, or an error message.
@@ -358,12 +399,30 @@ def open_raw_stream(ffmpeg, path, start, width, height, fps, duration=None,
     )
 
 
-def open_audio_stream(ffmpeg, path, start, rate, channels):
-    """Start ffmpeg decoding the audio from `start` as s16le PCM on stdout."""
+def atempo_filters(speed):
+    """Audio filters that change the speed without changing the pitch."""
+    parts = []
+    while speed > 2.0:  # each atempo handles 0.5x to 2x
+        parts.append("atempo=2.0")
+        speed /= 2.0
+    while speed < 0.5:
+        parts.append("atempo=0.5")
+        speed /= 0.5
+    if abs(speed - 1.0) > 1e-6:
+        parts.append(f"atempo={speed:.6f}")
+    return ",".join(parts)
+
+
+def open_audio_stream(ffmpeg, path, start, rate, channels, speed=1.0):
+    """Start ffmpeg decoding the audio from `start` as s16le PCM on stdout.
+
+    speed plays it faster or slower, keeping the pitch.
+    """
+    tempo = ["-af", atempo_filters(speed)] if speed != 1.0 else []
     return subprocess.Popen(
         [
             ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", f"{start:.3f}",
-            "-i", path, "-vn", "-sn", "-dn",
+            "-i", path, "-vn", "-sn", "-dn", *tempo,
             "-f", "s16le", "-acodec", "pcm_s16le", "-ac", str(channels), "-ar", str(rate), "-",
         ],
         stdout=subprocess.PIPE,

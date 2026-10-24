@@ -24,11 +24,13 @@ class Player:
         self.playing = False
         self.end = None  # video time to stop at; may be changed while playing
         self.muted = False  # read by the audio thread
+        self.volume = 1.0  # 0..1, read by the audio thread
         self.no_sound_device = False  # set if sound was wanted but couldn't play
         self._token = 0
         self._proc = None
         self._audio = None
         self._queue = queue.Queue()
+        self._thread = None
         self._closed = False
         self._poll()
 
@@ -36,6 +38,10 @@ class Player:
         """Stop for good; call before destroying the window the player draws into."""
         self.stop()
         self._closed = True
+        # Let the playback thread finish closing its sound, so none is still being
+        # set up when the app exits (which can crash the sound library).
+        if self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join(timeout=1.0)
 
     def start(self, path, start, size, fps, end=None, pre_vf="", speed=1.0, sound=False):
         self.stop()
@@ -46,13 +52,18 @@ class Player:
         self._proc = ff.open_raw_stream(self.ffmpeg, path, start, w, h, fps,
                                         pre_vf=pre_vf, speed=speed)
         self._audio = None
-        if sound and speed == 1.0:
-            self._audio = audio_out.open_audio(self.ffmpeg, path, start, lambda: self.muted)
+        if sound:
+            self._audio = audio_out.open_audio(self.ffmpeg, path, start, self._gain, speed)
             self.no_sound_device = self._audio is None
-        threading.Thread(
+        self._thread = threading.Thread(
             target=self._worker,
             args=(self._token, self._proc, self._audio, start, w, h, fps, speed),
-            daemon=True).start()
+            daemon=True)
+        self._thread.start()
+
+    def _gain(self):
+        # Squared so the slider feels even to the ear (loudness isn't linear).
+        return 0.0 if self.muted else self.volume ** 2
 
     def stop(self):
         if not self.playing:

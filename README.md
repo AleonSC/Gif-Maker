@@ -14,10 +14,14 @@ A small Windows desktop app for turning a section of a video into a GIF.
    play bar keeps the current loop as a video section (see below).
 4. Click **Play clip** to loop just that section. You can drag the markers while it loops
    to fine-tune it.
-5. Choose FPS, width, speed, color count and looping, then click **Make GIF...**.
-   GIFs can be up to 30 seconds long (after the speed change).
+5. Choose FPS, width, speed, color count and looping, a **Format** (GIF, WebP or animated
+   PNG: the last two keep full colour and are often smaller) and a **Direction** (forward,
+   reverse, or boomerang: forward then back, which loops smoothly), then click **Make GIF...**.
+   Animations can be up to 30 seconds long (after the speed change; a boomerang counts twice).
 6. A preview window plays the GIF's frames on a loop. Rotate, flip or crop it (drag on
-   the picture; pick a crop shape like 1:1 or 16:9 to lock it), then click **Save GIF...**.
+   the picture; pick a crop shape like 1:1 or 16:9 to lock it). **Preview result** makes the
+   real file and plays it, with its true colours and file size; saving then just keeps it.
+   If you've made sections, you can save each one as its own file instead.
 
 **Save snapshot...** saves the frame you're looking at as a full-resolution PNG or JPEG,
 with the same preview window for rotating and cropping first.
@@ -26,7 +30,12 @@ with the same preview window for rotating and cropping first.
 cut exactly at the markers, after the same rotate/crop preview. To keep several parts of
 a video, set the markers and click **Add section** for each part: the sections appear in
 the orange strip under the timeline (click one to change it with the markers, then
-**Done editing**), and **Save video...** joins them in time order and cuts out the rest.
+**Done editing**), and **Save video...** joins them in time order and cuts out the rest, or
+saves each section as its own numbered video.
+
+The speed box and **Vol** slider next to the time set the playback speed (the sound keeps its
+pitch) and volume. **Delete file...** (or the Delete key) deletes the open video, after
+asking, to the Recycle Bin, and opens the next one in the folder.
 
 The **‹** and **›** buttons beside the video (or Page Up / Page Down) open the previous or
 next video in the same folder. **⛶** on the play bar (or F11, or double-clicking the video)

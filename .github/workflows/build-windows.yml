@@ -41,7 +41,7 @@ jobs:
           assert ff.grab_frame(exe, src, 1.0, 320, 180, fast=True)
           thumbs = list(ff.iter_keyframes(exe, src, 160, 90, 0.5, lambda: False))
           assert thumbs and all(len(b) == 160 * 90 * 3 for _, b in thumbs), len(thumbs)
-          err = ff.run_with_progress(ff.build_gif_command(exe, src, dst, 1.0, 3.0, 10, 320), 2.0)
+          err = ff.run_with_progress(ff.build_animation_command(exe, src, dst, 1.0, 3.0, 10, 320), 2.0)
           assert err is None, err
           assert os.path.getsize(dst) > 1000
           print("ok", os.path.getsize(dst))
