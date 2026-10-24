@@ -264,19 +264,7 @@ class GifMakerApp:
                                        values=(256, 128, 64, 32, 16))
         self.colors_box.grid(row=0, column=7, **pad)
         ttk.Checkbutton(opts, text="Loop forever", variable=self.loop).grid(row=0, column=8, **pad)
-        ttk.Label(opts, text="Format").grid(row=1, column=0, **pad)
-        fmt = ttk.Combobox(opts, textvariable=self.anim_format, width=13, state="readonly",
-                           values=self.formats)
-        fmt.grid(row=1, column=1, columnspan=2, sticky="w", **pad)
-        fmt.bind("<<ComboboxSelected>>", lambda e: self._format_changed())
-        Tooltip(fmt, "WebP and animated PNG keep full colour and are often smaller than GIF; "
-                     "most browsers and chat apps show them")
-        ttk.Label(opts, text="Direction").grid(row=1, column=3, sticky="e", **pad)
-        direction = ttk.Combobox(opts, textvariable=self.direction, width=10, state="readonly",
-                                 values=ff.DIRECTIONS)
-        direction.grid(row=1, column=4, columnspan=2, sticky="w", **pad)
-        direction.bind("<<ComboboxSelected>>", lambda e: self._update_length())
-        Tooltip(direction, "Boomerang plays forward then backward, so it loops smoothly")
+        Tooltip(self.colors_box, "Colours in the palette (GIF only)")
 
         bottom = ttk.Frame(main)
         bottom.pack(fill="x", pady=(8, 0))
@@ -744,7 +732,7 @@ class GifMakerApp:
             self.toggle_fullscreen()
         t = self.position.get()
         ExportDialog(self, "snapshot", self.transform,
-                     lambda transform, _choice, _rendered: self._save_snapshot(t, transform),
+                     lambda transform, *_: self._save_snapshot(t, transform),
                      time=t)
 
     def _save_snapshot(self, t, transform):
@@ -948,13 +936,6 @@ class GifMakerApp:
             text += "  \u2013 too long, shorten the clip or raise the speed"
         self.length_label.config(text=text, foreground="#c00" if over else "")
 
-    def _format_changed(self):
-        fmt = self.anim_format.get()
-        label = {"GIF": "GIF", "WebP": "WebP", "Animated PNG": "animated PNG"}[fmt]
-        self.make_btn.config(text=f"Make {label}...")
-        # Only GIFs have a limited palette.
-        self.colors_box.config(state="normal" if fmt == "GIF" else "disabled")
-
     # -------------------------------------------------------------- make
     def make_gif(self):
         """Make an animation (GIF, WebP or PNG) of the markers or of each section."""
@@ -976,21 +957,22 @@ class GifMakerApp:
                 "GifMaker",
                 "Options out of range:\nFPS 1-50, Width 0 or more, Speed 0.1-10, Colors 2-256.")
             return
+        # Format and direction are picked in the popup; start it on the last ones used.
         fmt, direction = self.anim_format.get(), self.direction.get()
-        what = {"GIF": "GIF", "WebP": "WebP", "Animated PNG": "animated PNG"}[fmt]
         choices = []
         rng = self._loop_range_quiet()
         if rng:
             choices.append(("The loop markers", [rng], False))
         if self.sections:
             sections = sorted(self.sections)
-            choices.append((f"Each section as its own {what} ({len(sections)})", sections, True))
+            choices.append((f"Each section as its own file ({len(sections)})", sections, True))
         if not choices:
             self._valid_range()  # explains what's wrong with the markers
             return
-        # Every animation has to fit the length limit.
+        # Every animation has to fit the length limit (checked for the chosen direction
+        # when saving; here, leave out what can't fit even played once forwards).
         fits = [c for c in choices
-                if all(ff.animation_seconds(*p, speed, direction) <= MAX_GIF_SECONDS for p in c[1])]
+                if all(ff.animation_seconds(*p, speed, "Forward") <= MAX_GIF_SECONDS for p in c[1])]
         if fits and len(fits) < len(choices):
             self.status.set(f"Some of what you marked is over {MAX_GIF_SECONDS} s, so it isn't "
                             "offered: " + ", ".join(c[0] for c in choices if c not in fits) + ".")
@@ -1002,19 +984,19 @@ class GifMakerApp:
                 "twice). Shorten the clip or sections, or raise the speed.")
             return
         self.stop_playback()
-        settings = dict(fps=fps, width=width, speed=speed, colors=colors, fmt=fmt,
-                        direction=direction, loop=self.loop.get())
+        settings = dict(fps=fps, width=width, speed=speed, colors=colors, loop=self.loop.get())
 
-        def render(transform, start, end, dst):
+        def render(transform, start, end, dst, fmt, direction):
             return ff.build_animation_command(
                 self.ffmpeg, self.video_path, dst, start, end, fps, width, speed, fmt,
                 direction, colors, settings["loop"], pre_vf=ff.transform_filters(**transform))
 
         ExportDialog(self, "gif", self.transform,
-                     lambda transform, choice, rendered: self._save_animation(
-                         render, settings, choices[choice], transform, rendered),
+                     lambda transform, choice, rendered, options: self._save_animation(
+                         render, settings, choices[choice], transform, rendered, options),
                      choices=choices, fps=fps, width=width, speed=speed, fmt=fmt,
-                     direction=direction, render=render)
+                     direction=direction, render=render, formats=self.formats,
+                     max_seconds=MAX_GIF_SECONDS)
 
     def _loop_range_quiet(self):
         """The marker range if it's usable, else None (without complaining)."""
@@ -1025,10 +1007,13 @@ class GifMakerApp:
         end = min(end, self.duration)
         return (start, end) if end > start else None
 
-    def _save_animation(self, render, settings, choice, transform, rendered):
+    def _save_animation(self, render, settings, choice, transform, rendered, options):
         self.transform = transform
         _, sections, separate = choice
-        fmt = settings["fmt"]
+        fmt, direction = options["fmt"], options["direction"]
+        self.anim_format.set(fmt)  # remembered for next time
+        self.direction.set(direction)
+        self._update_length()
         ext, kind = ff.ANIMATION_FORMATS[fmt]
         base = os.path.splitext(os.path.basename(self.video_path))[0]
         if separate:
@@ -1049,8 +1034,8 @@ class GifMakerApp:
         targets = self._numbered(dst, len(sections)) if separate else [dst]
         if targets is None:
             return
-        jobs = [(render(transform, s, e, path),
-                 ff.animation_seconds(s, e, settings["speed"], settings["direction"]), path)
+        jobs = [(render(transform, s, e, path, fmt, direction),
+                 ff.animation_seconds(s, e, settings["speed"], direction), path)
                 for (s, e), path in zip(sections, targets)]
         self._run(jobs, what)
 
@@ -1087,7 +1072,7 @@ class GifMakerApp:
             choices = [("The loop markers", [rng], False)]
         self.stop_playback()
         ExportDialog(self, "video", self.transform,
-                     lambda transform, choice, _rendered: self._save_video(choices[choice], transform),
+                     lambda transform, choice, *_: self._save_video(choices[choice], transform),
                      choices=choices, fps=min(self.video_fps, MAX_PLAYBACK_FPS),
                      sound=self.has_audio)
 

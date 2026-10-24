@@ -5,7 +5,7 @@ import shutil
 import tempfile
 import threading
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 
 from . import ffmpeg_tools as ff
 from .player import Player
@@ -39,15 +39,19 @@ class ExportDialog(tk.Toplevel):
     transform is a dict with rotate (degrees clockwise), flip (mirror) and crop
     ((x, y, w, h) fractions of the rotated frame).
 
-    For animations, render(transform, start, end, dst) returns the ffmpeg command
-    that makes the file; "Preview result" uses it to make and play the real thing.
+    For animations the user also picks the format (from `formats`) and direction
+    here, and render(transform, start, end, dst, fmt, direction) returns the ffmpeg
+    command that makes the file; "Preview result" uses it to make and play the
+    real thing. Each animation must be at most max_seconds long.
 
-    on_save(transform, choice_index, rendered) is called when Save is clicked;
-    rendered is the path of an already-made result that matches, or None.
+    on_save(transform, choice_index, rendered, options) is called when Save is
+    clicked; rendered is the path of an already-made result that matches, or None,
+    and options holds the animation's fmt and direction.
     """
 
     def __init__(self, app, mode, transform, on_save, time=0.0, choices=None, fps=15,
-                 width=0, speed=1.0, sound=False, fmt="GIF", direction="Forward", render=None):
+                 width=0, speed=1.0, sound=False, fmt="GIF", direction="Forward", render=None,
+                 formats=("GIF",), max_seconds=None):
         super().__init__(app.root)
         self.app = app
         self.mode = mode
@@ -58,7 +62,9 @@ class ExportDialog(tk.Toplevel):
         self.section = 0  # which section of the chosen ones the preview is playing
         self.fps, self.out_width, self.speed = fps, width, speed
         self.sound = sound
-        self.fmt, self.direction, self.render = fmt, direction, render
+        self.fmt_var = tk.StringVar(value=fmt if fmt in formats else formats[0])
+        self.direction_var = tk.StringVar(value=direction)
+        self.formats, self.render, self.max_seconds = formats, render, max_seconds
         self.rotate = transform["rotate"] % 360
         self.flip = transform["flip"]
         self.crop = list(transform["crop"])
@@ -74,9 +80,7 @@ class ExportDialog(tk.Toplevel):
         self.showing_result = False
         self.render_token = 0
 
-        names = {"GIF": "GIF", "WebP": "WebP", "Animated PNG": "animated PNG"}
-        self.what = {"snapshot": "snapshot", "video": "video"}.get(mode) or names[fmt]
-        self.title(f"Save {self.what}")
+        self._set_what()
         self.transient(app.root)
         self.resizable(False, False)
         self._build()
@@ -105,7 +109,21 @@ class ExportDialog(tk.Toplevel):
         aspect.bind("<<ComboboxSelected>>", lambda e: self._apply_aspect())
         ttk.Button(tools, text="Reset", command=self._reset).pack(side="left", padx=4)
         if self.mode == "gif":
-            self.result_btn = ttk.Button(tools, text="Preview result", command=self._toggle_result)
+            anim = ttk.Frame(main)
+            anim.pack(fill="x", pady=(0, 6))
+            ttk.Label(anim, text="Format").pack(side="left")
+            fmt = ttk.Combobox(anim, textvariable=self.fmt_var, values=self.formats, width=13,
+                               state="readonly")
+            fmt.pack(side="left", padx=(4, 16))
+            fmt.bind("<<ComboboxSelected>>", lambda e: self._options_changed())
+            ttk.Label(anim, text="Direction").pack(side="left")
+            direction = ttk.Combobox(anim, textvariable=self.direction_var, values=ff.DIRECTIONS,
+                                     width=10, state="readonly")
+            direction.pack(side="left", padx=4)
+            direction.bind("<<ComboboxSelected>>", lambda e: self._options_changed())
+            ttk.Label(anim, text="WebP and animated PNG keep full colour; boomerang plays "
+                                 "forward then back.", foreground="#666").pack(side="left", padx=(10, 0))
+            self.result_btn = ttk.Button(anim, text="Preview result", command=self._toggle_result)
             self.result_btn.pack(side="right")
 
         self.canvas = tk.Canvas(main, width=VIEW_W, height=VIEW_H, bg="#111",
@@ -134,6 +152,26 @@ class ExportDialog(tk.Toplevel):
         self.save_btn = ttk.Button(bottom, command=self._save)
         self.save_btn.pack(side="right", padx=6)
         self._update_labels()
+
+    @property
+    def fmt(self):
+        return self.fmt_var.get()
+
+    @property
+    def direction(self):
+        return self.direction_var.get()
+
+    def _set_what(self):
+        names = {"GIF": "GIF", "WebP": "WebP", "Animated PNG": "animated PNG"}
+        self.what = {"snapshot": "snapshot", "video": "video"}.get(self.mode) or names[self.fmt]
+        self.title(f"Save {self.what}")
+
+    def _options_changed(self):
+        """A different format or direction: the made preview no longer applies."""
+        self._set_what()
+        self._leave_result()
+        self._update_labels()
+        self._update_info()
 
     def _sections(self):
         return self.choices[self.choice.get()][1]
@@ -266,8 +304,8 @@ class ExportDialog(tk.Toplevel):
 
     # ---------------------------------------------------- result preview
     def _result_valid(self):
-        return (self.result is not None and self.result[1] == self.transform()
-                and self.result[2] == self.choice.get())
+        return (self.result is not None and self.result[1:] == (
+            self.transform(), self.choice.get(), self.fmt, self.direction))
 
     def _toggle_result(self):
         if self.showing_result:
@@ -280,9 +318,10 @@ class ExportDialog(tk.Toplevel):
         # Make the real file in the background, then play it.
         self.render_token += 1
         token, transform, choice = self.render_token, self.transform(), self.choice.get()
+        fmt, direction = self.fmt, self.direction
         start, end = self._sections()[0]
-        dst = os.path.join(self.temp_dir, f"result{self.render_token}{ff.ANIMATION_FORMATS[self.fmt][0]}")
-        cmd = self.render(transform, start, end, dst)
+        dst = os.path.join(self.temp_dir, f"result{self.render_token}{ff.ANIMATION_FORMATS[fmt][0]}")
+        cmd = self.render(transform, start, end, dst, fmt, direction)
         seconds = ff.animation_seconds(start, end, self.speed, self.direction)
         self.result_btn.config(text="Making preview...", state="disabled")
 
@@ -293,7 +332,8 @@ class ExportDialog(tk.Toplevel):
         def work():
             err = ff.run_with_progress(cmd, seconds, progress,
                                        lambda: self.closed or token != self.render_token)
-            self._from_thread(lambda: self._render_done(token, err, dst, transform, choice))
+            self._from_thread(lambda: self._render_done(token, err, dst, (transform, choice, fmt,
+                                                                          direction)))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -304,14 +344,14 @@ class ExportDialog(tk.Toplevel):
         except (RuntimeError, tk.TclError):
             pass
 
-    def _render_done(self, token, err, dst, transform, choice):
+    def _render_done(self, token, err, dst, made_from):
         if self.closed or token != self.render_token:
             return
         self.result_btn.config(text="Preview result", state="normal")
         if err:
             self.info.config(text="Couldn't make the preview: " + err.splitlines()[-1][:80])
             return
-        self.result = (dst, transform, choice)
+        self.result = (dst, *made_from)
         self._show_result()
 
     def _show_result(self):
@@ -484,12 +524,22 @@ class ExportDialog(tk.Toplevel):
     # ------------------------------------------------------------ finish
     def _save(self):
         transform, choice = self.transform(), self.choice.get()
+        if self.mode == "gif" and self.max_seconds:
+            longest = max(ff.animation_seconds(s, e, self.speed, self.direction)
+                          for s, e in self._sections())
+            if longest > self.max_seconds:
+                messagebox.showerror(
+                    "Too long", f"This would be {longest:.1f} s long; animations can be at most "
+                                f"{self.max_seconds} s (a boomerang counts twice). Pick another "
+                                "direction, or shorten the clip in the main window.", parent=self)
+                return
         rendered = None
         if self._result_valid() and not self._separate():
             rendered = self.result[0]
+        options = {"fmt": self.fmt, "direction": self.direction}
         self.close(remove_temp=False)
         try:
-            self.on_save(transform, choice, rendered)  # copies `rendered` if it uses it
+            self.on_save(transform, choice, rendered, options)  # copies `rendered` if it uses it
         finally:
             shutil.rmtree(self.temp_dir, ignore_errors=True)
 

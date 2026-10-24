@@ -14,11 +14,12 @@ A small Windows desktop app for turning a section of a video into a GIF.
    play bar keeps the current loop as a video section (see below).
 4. Click **Play clip** to loop just that section. You can drag the markers while it loops
    to fine-tune it.
-5. Choose FPS, width, speed, color count and looping, a **Format** (GIF, WebP or animated
-   PNG: the last two keep full colour and are often smaller) and a **Direction** (forward,
-   reverse, or boomerang: forward then back, which loops smoothly), then click **Make GIF...**.
+5. Choose FPS, width, speed, color count and looping, then click **Make GIF...**.
    Animations can be up to 30 seconds long (after the speed change; a boomerang counts twice).
-6. A preview window plays the GIF's frames on a loop. Rotate, flip or crop it (drag on
+6. A preview window plays the GIF's frames on a loop. Pick the **Format** (GIF, WebP or
+   animated PNG: the last two keep full colour and are often smaller) and **Direction**
+   (forward, reverse, or boomerang: forward then back, which loops smoothly) there, and
+   rotate, flip or crop it (drag on
    the picture; pick a crop shape like 1:1 or 16:9 to lock it). **Preview result** makes the
    real file and plays it, with its true colours and file size; saving then just keeps it.
    If you've made sections, you can save each one as its own file instead.
