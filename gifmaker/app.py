@@ -14,6 +14,7 @@ from tkinter import filedialog, font, messagebox, ttk
 
 from . import ffmpeg_tools as ff
 from . import files
+from . import theme
 from .export_dialog import ExportDialog
 from .grid_player import GridPlayer
 from .player import Player
@@ -59,7 +60,8 @@ class Tooltip:
         self.tip.wm_overrideredirect(True)
         self.tip.wm_geometry(f"+{x}+{y}")
         text = self.text() if callable(self.text) else self.text
-        tk.Label(self.tip, text=text, background="#ffffe0", relief="solid",
+        tk.Label(self.tip, text=text, background=theme.colors["tip"],
+                 foreground=theme.colors["tip_fg"], relief="solid",
                  borderwidth=1, padx=6, pady=2).pack()
 
     def _hide(self, _event):
@@ -117,6 +119,7 @@ class GifMakerApp:
         self.anim_format = tk.StringVar(value="GIF")
         self.direction = tk.StringVar(value="Forward")
         self.show_folder = tk.BooleanVar(value=False)
+        self.dark_mode = tk.BooleanVar(value=theme.dark)
         self.sound = tk.BooleanVar(value=True)
         self.play_speed = tk.StringVar(value="1\u00D7")
         self.volume = tk.DoubleVar(value=100)
@@ -126,6 +129,10 @@ class GifMakerApp:
         self._sections_changed()
         self._enable_drop()
         self._poll_frame_queue()
+
+    def _toggle_dark(self):
+        theme.apply(self.root, self.dark_mode.get())
+        theme.save_dark_setting(self.dark_mode.get())
 
     def open_grid(self):
         """Open the grid player (starting with the current video), or bring it to the front."""
@@ -163,8 +170,10 @@ class GifMakerApp:
         Tooltip(delete, "Delete this video and open the next one in the folder  (Delete key)")
         grid = ttk.Button(top, text="Grid player", command=self.open_grid)
         grid.pack(side="right")
+        ttk.Checkbutton(top, text="Dark mode", variable=self.dark_mode,
+                        command=self._toggle_dark).pack(side="right", padx=(0, 12))
         Tooltip(grid, "Play several videos at once, each in a panel you can move, resize and loop")
-        self.file_label = ttk.Label(top, text="No video loaded", foreground="#666")
+        self.file_label = ttk.Label(top, text="No video loaded", style="Muted.TLabel")
         self.file_label.pack(side="left", padx=10)
 
         view = ttk.Frame(main)
@@ -261,7 +270,7 @@ class GifMakerApp:
                                              command=self.remove_section, state="disabled")
         self.remove_section_btn.pack(side="left", padx=4)
         ttk.Button(sec, text="Clear sections", command=self.clear_sections).pack(side="left")
-        self.section_label = ttk.Label(sec, foreground="#555", wraplength=470, justify="left")
+        self.section_label = ttk.Label(sec, style="Muted.TLabel", wraplength=470, justify="left")
         self.section_label.pack(side="left", padx=(10, 0))
         for var in (self.start_text, self.end_text, self.speed):
             var.trace_add("write", lambda *_: self._range_changed())
@@ -296,7 +305,7 @@ class GifMakerApp:
                         variable=self.show_folder).pack(side="right")
         self.progress = ttk.Progressbar(bottom, maximum=1.0)
         self.progress.pack(side="left", fill="x", expand=True, padx=6)
-        status = ttk.Label(main, textvariable=self.status, foreground="#444")
+        status = ttk.Label(main, textvariable=self.status)
         status.pack(fill="x", pady=(6, 0))
         # Hidden in fullscreen, which keeps just the video, timeline and play bar.
         self._windowed_only = [top, rng, opts, bottom, status]
@@ -380,7 +389,7 @@ class GifMakerApp:
         self.clear_sections()
         sound = "" if info.has_audio else ", no sound"
         self.file_label.config(text=f"{os.path.basename(path)}   ({ff.format_time(duration)}, "
-                                    f"{w}x{h}, {self.video_fps:g} fps{sound})", foreground="#000")
+                                    f"{w}x{h}, {self.video_fps:g} fps{sound})", style="TLabel")
         self.timeline.set_duration(duration)
         self.video_token += 1
         self.shown_t = None
@@ -517,7 +526,7 @@ class GifMakerApp:
         self.preview_image = None
         self.canvas.itemconfig(self.canvas_img, image="")
         self.canvas.itemconfig(self.canvas_text, text="Open a video, or drag and drop one here.")
-        self.file_label.config(text="No video loaded", foreground="#666")
+        self.file_label.config(text="No video loaded", style="Muted.TLabel")
         self.sound_check.config(state="normal")
         self.position.set(0.0)
         self.pos_label.config(text=ff.format_time(0))
@@ -936,7 +945,7 @@ class GifMakerApp:
             if speed <= 0:
                 raise ValueError
         except (ValueError, tk.TclError):
-            self.length_label.config(text="Animation length: ?", foreground="")
+            self.length_label.config(text="Animation length: ?", style="TLabel")
             return
         direction = self.direction.get()
         length = ff.animation_seconds(start, end, speed, direction)
@@ -951,7 +960,7 @@ class GifMakerApp:
         over = length > MAX_GIF_SECONDS
         if over:
             text += "  \u2013 too long, shorten the clip or raise the speed"
-        self.length_label.config(text=text, foreground="#c00" if over else "")
+        self.length_label.config(text=text, style="Error.TLabel" if over else "TLabel")
 
     # -------------------------------------------------------------- make
     def make_gif(self):
@@ -1226,10 +1235,7 @@ def main():
             root = None
     if root is None:
         root = tk.Tk()
-    try:
-        ttk.Style(root).theme_use("vista" if sys.platform == "win32" else "clam")
-    except tk.TclError:
-        pass
+    theme.apply(root, theme.load_dark_setting())
     try:
         ffmpeg = ff.find_ffmpeg()
     except RuntimeError as e:

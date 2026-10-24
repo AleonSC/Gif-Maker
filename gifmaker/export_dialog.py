@@ -8,6 +8,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from . import ffmpeg_tools as ff
+from . import theme
 from .player import Player
 
 VIEW_W, VIEW_H = 720, 480
@@ -83,6 +84,7 @@ class ExportDialog(tk.Toplevel):
         self._set_what()
         self.transient(app.root)
         self.resizable(False, False)
+        theme.style_window(self)
         self._build()
         self.player = Player(self, app.ffmpeg, self._on_frame, self._restart_loop)
         self.protocol("WM_DELETE_WINDOW", self.close)
@@ -122,7 +124,7 @@ class ExportDialog(tk.Toplevel):
             direction.pack(side="left", padx=4)
             direction.bind("<<ComboboxSelected>>", lambda e: self._options_changed())
             ttk.Label(anim, text="WebP and animated PNG keep full colour; boomerang plays "
-                                 "forward then back.", foreground="#666").pack(side="left", padx=(10, 0))
+                                 "forward then back.", style="Muted.TLabel").pack(side="left", padx=(10, 0))
             self.result_btn = ttk.Button(anim, text="Preview result", command=self._toggle_result)
             self.result_btn.pack(side="right")
 
@@ -135,7 +137,7 @@ class ExportDialog(tk.Toplevel):
         self.canvas.bind("<ButtonRelease-1>", lambda e: setattr(self, "drag", None))
         self.canvas.bind("<Motion>", self._hover)
 
-        self.hint = ttk.Label(main, foreground="#666")
+        self.hint = ttk.Label(main, style="Muted.TLabel")
         self.hint.pack(anchor="w", pady=(6, 0))
         if len(self.choices) > 1:
             pick = ttk.Frame(main)

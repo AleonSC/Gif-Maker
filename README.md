@@ -48,6 +48,9 @@ its corner to resize it (the picture re-sharpens to the new size), click it to p
 pause, and use its green and red markers to loop part of it. **Arrange** tiles them neatly,
 and each one has its own sound switch (off to begin with).
 
+**Dark mode** (top right) switches the whole app to dark colours, title bars included. It's
+remembered, and the first time it follows your Windows setting.
+
 **Clear** closes the current video so you can start over, and **Show folder after
 saving** opens Explorer on each file you save.
 

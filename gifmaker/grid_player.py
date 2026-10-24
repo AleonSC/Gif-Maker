@@ -8,6 +8,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from . import ffmpeg_tools as ff
+from . import theme
 from .player import Player
 from .timeline import Timeline
 
@@ -37,6 +38,7 @@ class GridPlayer(tk.Toplevel):
         self.title("Grid player")
         self.geometry("1200x800")
         self.minsize(520, 400)
+        theme.style_window(self)
 
         bar = ttk.Frame(self, padding=(8, 6))
         bar.pack(fill="x")
@@ -46,7 +48,7 @@ class GridPlayer(tk.Toplevel):
         ttk.Button(bar, text="❚❚ Pause all", command=lambda: self._all("pause")).pack(side="left", padx=4)
         ttk.Button(bar, text="Remove all", command=self.remove_all).pack(side="left", padx=(12, 0))
         ttk.Checkbutton(bar, text="Snap to grid", variable=self.snap).pack(side="left", padx=(16, 0))
-        ttk.Label(bar, foreground="#666", text="Drag to move \u00B7 corner to resize \u00B7 click "
+        ttk.Label(bar, style="Muted.TLabel", text="Drag to move \u00B7 corner to resize \u00B7 click "
                   "to play/pause \u00B7 green/red markers set the loop").pack(side="left", padx=(16, 0))
 
         self.area = tk.Frame(self, bg=DARK)

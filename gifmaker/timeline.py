@@ -2,14 +2,14 @@
 
 import tkinter as tk
 
+from . import theme
+
 MARGIN = 12  # pixels left/right of the track, so the markers can be grabbed at the ends
 GRAB = 8  # how close (pixels) the mouse must be to grab a marker
+# The track, range and playhead colours come from the theme (light or dark).
 COLORS = {
-    "track": "#c8c8c8",
-    "range": "#9cc3f5",
     "start": "#2e9e44",
     "end": "#d03a3a",
-    "playhead": "#222222",
     "section": "#f2b75a",
     "section_selected": "#e07b00",
 }
@@ -36,6 +36,8 @@ class Timeline(tk.Canvas):
         self.on_seek_end = on_seek_end
         self.on_marker = on_marker
         self.on_section = on_section
+        self.config(bg=theme.colors["bg"])
+        theme.on_change(lambda: (self.config(bg=theme.colors["bg"]), self.redraw()))
         self.sections = []
         self.selected = None
         self.duration = 0.0
@@ -95,9 +97,9 @@ class Timeline(tk.Canvas):
     def redraw(self):
         self.delete("all")
         w = self.winfo_width()
-        self.create_rectangle(MARGIN, 18, w - MARGIN, 26, fill=COLORS["track"], width=0)
+        self.create_rectangle(MARGIN, 18, w - MARGIN, 26, fill=theme.colors["track"], width=0)
         if self.on_section:
-            self.create_rectangle(MARGIN, LANE_TOP, w - MARGIN, LANE_TOP + 12, fill="#e6e6e6", width=0)
+            self.create_rectangle(MARGIN, LANE_TOP, w - MARGIN, LANE_TOP + 12, fill=theme.colors["lane"], width=0)
         if self.duration:
             order = [i for i in range(len(self.sections)) if i != self.selected]
             if self.selected is not None:
@@ -109,7 +111,7 @@ class Timeline(tk.Canvas):
                                       LANE_TOP + 12, width=2 if sel else 1, outline="#7a4a00",
                                       fill=COLORS["section_selected" if sel else "section"])
             xs, xe = self._x(self.start), self._x(self.end)
-            self.create_rectangle(xs, 14, xe, 30, fill=COLORS["range"], width=0)
+            self.create_rectangle(xs, 14, xe, 30, fill=theme.colors["range"], width=0)
             for x, color, sign in ((xs, COLORS["start"], 1), (xe, COLORS["end"], -1)):
                 self.create_line(x, 6, x, 38, fill=color, width=2)
                 # a flag pointing into the loop, easy to grab
@@ -122,8 +124,8 @@ class Timeline(tk.Canvas):
         if not self.duration:
             return
         x = self._x(self.position)
-        self.create_line(x, 10, x, 34, fill=COLORS["playhead"], width=2, tags="playhead")
-        self.create_oval(x - 5, 17, x + 5, 27, fill="white", outline=COLORS["playhead"],
+        self.create_line(x, 10, x, 34, fill=theme.colors["playhead"], width=2, tags="playhead")
+        self.create_oval(x - 5, 17, x + 5, 27, fill="white", outline=theme.colors["playhead"],
                          width=2, tags="playhead")
 
     # ------------------------------------------------------------- mouse

@@ -90,6 +90,20 @@ def run(report_path):
         finally:
             root.destroy()
 
+    def dark_mode():
+        import tkinter as tk
+        from tkinter import ttk
+        from . import theme
+        root = tk.Tk()
+        try:
+            theme.apply(root, True)
+            dark = ttk.Style(root).theme_use()
+            theme.apply(root, False)
+            return (f"dark uses {dark}, light uses {ttk.Style(root).theme_use()}; "
+                    f"Windows prefers dark: {theme.system_prefers_dark()}")
+        finally:
+            root.destroy()
+
     check("ffmpeg", ffmpeg)
     check("source video", source)
     check("gif", gif)
@@ -98,6 +112,7 @@ def run(report_path):
     check("delete to the Recycle Bin", recycle_bin)
     check("sound", sound)
     check("drag and drop", drag_and_drop)
+    check("dark mode", dark_mode)
     with open(report_path, "w", encoding="utf-8") as f:
         f.write("\n".join(results) + "\n")
     return 0 if all(r.startswith("ok") for r in results) else 1
