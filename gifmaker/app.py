@@ -15,6 +15,7 @@ from tkinter import filedialog, font, messagebox, ttk
 from . import ffmpeg_tools as ff
 from . import files
 from .export_dialog import ExportDialog
+from .grid_player import GridPlayer
 from .player import Player
 from .timeline import Timeline
 
@@ -97,6 +98,7 @@ class GifMakerApp:
         self.busy = False
         self.cancel_requested = False
         self.fullscreen = False
+        self.grid_window = None
         self.view_w, self.view_h = PREVIEW_W, PREVIEW_H  # size of the video area
 
         self.player = Player(root, ffmpeg, self._on_play_frame, self._on_play_end)
@@ -125,8 +127,20 @@ class GifMakerApp:
         self._enable_drop()
         self._poll_frame_queue()
 
+    def open_grid(self):
+        """Open the grid player (starting with the current video), or bring it to the front."""
+        if self.grid_window is not None:
+            self.grid_window.lift()
+            return
+        self.stop_playback()
+        self.grid_window = GridPlayer(self, VIDEO_TYPES)
+        if self.video_path:
+            self.grid_window.after(100, lambda: self.grid_window and self.grid_window.add(self.video_path))
+
     def close(self):
         # Stop the sound before Tk and Python shut down, or PortAudio can crash on exit.
+        if self.grid_window is not None:
+            self.grid_window.close()
         self.player.close()
         self.root.destroy()
 
@@ -147,6 +161,9 @@ class GifMakerApp:
         delete = ttk.Button(top, text="Delete file...", command=self.delete_file)
         delete.pack(side="left", padx=(6, 0))
         Tooltip(delete, "Delete this video and open the next one in the folder  (Delete key)")
+        grid = ttk.Button(top, text="Grid player", command=self.open_grid)
+        grid.pack(side="right")
+        Tooltip(grid, "Play several videos at once, each in a panel you can move, resize and loop")
         self.file_label = ttk.Label(top, text="No video loaded", foreground="#666")
         self.file_label.pack(side="left", padx=10)
 

@@ -28,8 +28,10 @@ class Timeline(tk.Canvas):
       on_section(index)     a section was clicked (None: an empty part of the strip)
     """
 
-    def __init__(self, master, on_seek, on_seek_end, on_marker, on_section, **kw):
-        super().__init__(master, height=LANE_TOP + 14, highlightthickness=0, **kw)
+    def __init__(self, master, on_seek, on_seek_end, on_marker, on_section=None, **kw):
+        # Without on_section there's no sections strip, which makes it more compact.
+        height = LANE_TOP + 14 if on_section else LANE_TOP - 2
+        super().__init__(master, height=height, highlightthickness=0, **kw)
         self.on_seek = on_seek
         self.on_seek_end = on_seek_end
         self.on_marker = on_marker
@@ -94,7 +96,8 @@ class Timeline(tk.Canvas):
         self.delete("all")
         w = self.winfo_width()
         self.create_rectangle(MARGIN, 18, w - MARGIN, 26, fill=COLORS["track"], width=0)
-        self.create_rectangle(MARGIN, LANE_TOP, w - MARGIN, LANE_TOP + 12, fill="#e6e6e6", width=0)
+        if self.on_section:
+            self.create_rectangle(MARGIN, LANE_TOP, w - MARGIN, LANE_TOP + 12, fill="#e6e6e6", width=0)
         if self.duration:
             order = [i for i in range(len(self.sections)) if i != self.selected]
             if self.selected is not None:
@@ -126,7 +129,7 @@ class Timeline(tk.Canvas):
     # ------------------------------------------------------------- mouse
     def _hover(self, event):
         if self.dragging is None:
-            if event.y >= LANE_TOP - 2:
+            if self.on_section and event.y >= LANE_TOP - 2:
                 cursor = "hand2" if self._section_at(event.x) is not None else ""
             else:
                 cursor = "sb_h_double_arrow" if self._marker_at(event.x) else ""
@@ -135,7 +138,7 @@ class Timeline(tk.Canvas):
     def _press(self, event):
         if not self.duration:
             return
-        if event.y >= LANE_TOP - 2:
+        if self.on_section and event.y >= LANE_TOP - 2:
             self.on_section(self._section_at(event.x))
             return
         self.dragging = self._marker_at(event.x) or "seek"

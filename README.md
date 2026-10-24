@@ -42,6 +42,12 @@ The **‹** and **›** buttons beside the video (or Page Up / Page Down) open t
 next video in the same folder. **⛶** on the play bar (or F11, or double-clicking the video)
 shows the video fullscreen with the timeline and play bar underneath; Esc goes back.
 
+**Grid player** (top right) opens a window for playing several videos at once. Add them
+with **Add videos...** or by dragging them in from Explorer; drag a video to move it, drag
+its corner to resize it (the picture re-sharpens to the new size), click it to play or
+pause, and use its green and red markers to loop part of it. **Arrange** tiles them neatly,
+and each one has its own sound switch (off to begin with).
+
 **Clear** closes the current video so you can start over, and **Show folder after
 saving** opens Explorer on each file you save.
 
