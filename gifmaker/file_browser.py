@@ -292,13 +292,13 @@ class FileBrowser(ttk.Frame):
 
     def _mark_current(self):
         c = self.canvas
-        c.delete("current")
+        c.delete("marked")
         cell = next(((x, y) for p, x, y in self.cells if p == self.current), None)
         if cell:
             x, y = cell
             w, h, label = self._metrics()
             c.create_rectangle(x - 3, y - 3, x + w + 3, y + h + label, outline=theme.colors["select"],
-                               width=3, tags="current")
+                               width=3, tags="marked")
 
     def _scroll_to_current(self):
         cell = next(((x, y) for p, x, y in self.cells if p == self.current), None)
