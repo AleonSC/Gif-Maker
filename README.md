@@ -43,7 +43,8 @@ asking, to the Recycle Bin, and opens the next one in the folder.
 
 The **‹** and **›** buttons beside the video (or Page Up / Page Down) open the previous or
 next video in the same folder; tick **Autoplay** (top right) to have each one start playing
-as soon as it opens. Resize the window to make the video bigger or smaller; the picture
+as soon as it opens. With **One window** ticked (the default), videos you open from
+Explorer load into the GifMaker that's already open instead of starting another. Resize the window to make the video bigger or smaller; the picture
 scales to fit. **⛶** next to the time (or F11, or double-clicking the video) shows the video
 fullscreen with the timeline and play bar underneath; Esc goes back.
 

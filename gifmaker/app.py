@@ -15,6 +15,7 @@ from tkinter import filedialog, font, messagebox, ttk
 
 from . import ffmpeg_tools as ff
 from . import files
+from . import single_instance
 from . import theme
 from . import updater
 from .export_dialog import ANIMATION_DEFAULTS, ExportDialog
@@ -103,6 +104,7 @@ class GifMakerApp:
             self.anim_options.update((k, v) for k, v in saved.items() if k in ANIMATION_DEFAULTS)
         self.show_folder = self._setting_var("show_folder", False)
         self.autoplay = self._setting_var("autoplay", False)
+        self.one_window = self._setting_var("one_window", True)
         self.dark_mode = tk.BooleanVar(value=theme.dark)
         self.sound = tk.BooleanVar(value=True)
         self.play_speed = tk.StringVar(value="1\u00D7")
@@ -114,6 +116,11 @@ class GifMakerApp:
         self._sections_changed()
         self._enable_drop()
         self._poll_frame_queue()
+        try:  # take videos opened from Explorer while this window is open
+            self.listener = single_instance.Listener(
+                lambda path: self.root.after(0, lambda: self._handed_over(path)))
+        except OSError:
+            self.listener = None
         self.new_release = None  # a newer release, once found
         if updater.can_update():
             threading.Thread(target=self._check_for_update, daemon=True).start()
@@ -241,7 +248,23 @@ class GifMakerApp:
             return
         self.close()
 
+    def _handed_over(self, path):
+        """Another copy of GifMaker passed us a video: come to the front and open it."""
+        if self.root.state() == "iconic":
+            self.root.deiconify()
+        self.root.lift()
+        self.root.attributes("-topmost", True)  # Windows won't always let a window come forward
+        self.root.after(300, lambda: self.root.attributes("-topmost", False))
+        self.root.focus_force()
+        if self.busy:
+            self.status.set("Wait for the save to finish (or cancel it), then open "
+                            f"{os.path.basename(path)} again.")
+            return
+        self.open_video(path)
+
     def close(self):
+        if self.listener:
+            self.listener.close()
         # Stop the sound before Tk and Python shut down, or PortAudio can crash on exit.
         if self.grid_window is not None:
             self.grid_window.close()
@@ -291,8 +314,12 @@ class GifMakerApp:
         rename.pack(side="right", padx=(0, 4))
         Tooltip(rename, "Rename everything in a folder with a numbered pattern, "
                         "in name, date, size or colour order")
+        one = ttk.Checkbutton(top, text="One window", variable=self.one_window)
+        one.pack(side="right", padx=(0, 12))
+        Tooltip(one, "Videos you open from Explorer play in this window, "
+                     "instead of opening another GifMaker")
         autoplay = ttk.Checkbutton(top, text="Autoplay", variable=self.autoplay)
-        autoplay.pack(side="right", padx=(0, 12))
+        autoplay.pack(side="right", padx=(0, 10))
         Tooltip(autoplay, "Start playing each video as soon as it opens, "
                           "e.g. when going through a folder with ‹ ›")
         # width=1: a long name is cut off rather than widening the window.
@@ -1363,6 +1390,9 @@ def main():
         from .selftest import run
 
         sys.exit(run(sys.argv[2]))
+    video = sys.argv[1] if len(sys.argv) > 1 and os.path.isfile(sys.argv[1]) else None
+    if video and theme.load_setting("one_window", True) and single_instance.hand_over(video):
+        return  # the GifMaker that's already open has it
     if sys.platform == "win32":
         try:
             import ctypes
@@ -1386,8 +1416,8 @@ def main():
         messagebox.showerror("GifMaker", str(e))
         return
     app = GifMakerApp(root, ffmpeg)
-    if len(sys.argv) > 1 and os.path.isfile(sys.argv[1]):
-        root.after(100, lambda: app.open_video(sys.argv[1]))
+    if video:
+        root.after(100, lambda: app.open_video(video))
     root.mainloop()
     app.player.close()
 
