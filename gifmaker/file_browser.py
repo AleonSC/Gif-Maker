@@ -1,4 +1,4 @@
-"""The side panel that shows the videos in the current folder as thumbnails.
+"""The side panel that shows the videos and pictures in the current folder as thumbnails.
 
 Thumbnails are made in the background (a frame a few seconds in), kept as PNG
 in memory and on disk (%LOCALAPPDATA%\\GifMaker\\thumbs) so a folder opens
@@ -154,8 +154,9 @@ class FileBrowser(ttk.Frame):
             except OSError:
                 png = None
         if png is None and token == self.token:
-            png = (ff.grab_frame(self.ffmpeg, path, GRAB_AT, BASE_W, BASE_H, fast=True, codec="png")
-                   or ff.grab_frame(self.ffmpeg, path, 0, BASE_W, BASE_H, fast=True, codec="png"))
+            png = None if ff.is_image(path) else ff.grab_frame(
+                self.ffmpeg, path, GRAB_AT, BASE_W, BASE_H, fast=True, codec="png")
+            png = png or ff.grab_frame(self.ffmpeg, path, 0, BASE_W, BASE_H, fast=True, codec="png")
             if png and disk:
                 try:
                     os.makedirs(_thumb_dir(), exist_ok=True)
@@ -253,7 +254,7 @@ class FileBrowser(ttk.Frame):
         rows = (len(self.paths) + cols - 1) // cols
         c.configure(scrollregion=(0, 0, width, GAP + rows * (h + label + GAP)))
         if not self.paths:
-            c.create_text(width // 2, 40, text="No videos here", fill=theme.colors["muted"])
+            c.create_text(width // 2, 40, text="No videos or pictures here", fill=theme.colors["muted"])
         self._mark_current()
 
     def _draw_cell(self, path, x, y):

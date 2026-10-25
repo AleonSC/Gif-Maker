@@ -95,6 +95,7 @@ jobs:
           "open command: $cmd"
           if ((Get-ItemProperty 'HKCU:\Software\RegisteredApplications').GifMaker -ne 'Software\GifMaker\Capabilities') { throw "not registered" }
           (Get-ItemProperty 'HKCU:\Software\GifMaker\Capabilities\FileAssociations').'.mp4'
+          if ((Get-ItemProperty 'HKCU:\Software\GifMaker\Capabilities\FileAssociations').'.jpg' -ne 'GifMaker.Picture') { throw "pictures not registered" }
           $p = Start-Process -FilePath "$app\GifMaker.exe" -ArgumentList '--selftest', "$PWD\installed.txt" -Wait -PassThru
           Get-Content installed.txt
           if ($p.ExitCode) { exit $p.ExitCode }

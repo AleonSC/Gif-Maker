@@ -60,6 +60,14 @@ VideoInfo = namedtuple("VideoInfo", "duration width height fps has_audio")
 # packets"). For these, seek PREROLL seconds early, keep the file's own timestamps
 # (-copyts) and trim at the exact time after decoding. probe() records which files
 # need it, with the file's starting timestamp.
+# Still pictures (GIFs count as videos: they're usually animated).
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
+
+
+def is_image(path):
+    return os.path.splitext(path)[1].lower() in IMAGE_EXTENSIONS
+
+
 PREROLL_FORMATS = {"mpegts", "mpeg", "mpegvideo", "h264", "hevc", "flv"}
 PREROLL = 10.0
 _preroll = {}  # path -> the file's start timestamp, for files that need pre-roll
@@ -107,9 +115,12 @@ def probe(ffmpeg, path):
     )
     info = proc.stderr
     m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", info)
-    if not m:
-        raise RuntimeError("Could not read this file as a video.\n\n" + info[-800:])
-    duration = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+    if m:
+        duration = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+    elif re.search(r"Duration:\s*N/A", info) and "Video:" in info:
+        duration = 0.0  # a still picture (PNG, BMP, WebP...)
+    else:
+        raise RuntimeError("Could not read this file as a video or picture.\n\n" + info[-800:])
 
     width = height = 0
     fps = 0.0

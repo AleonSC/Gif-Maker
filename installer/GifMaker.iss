@@ -60,7 +60,7 @@ Root: HKA; Subkey: "Software\Classes\Applications\GifMaker.exe\shell\open\comman
 ; What it can open, listed under Settings > Default apps.
 Root: HKA; Subkey: "Software\GifMaker"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\GifMaker\Capabilities"; ValueType: string; ValueName: "ApplicationName"; ValueData: "GifMaker"
-Root: HKA; Subkey: "Software\GifMaker\Capabilities"; ValueType: string; ValueName: "ApplicationDescription"; ValueData: "Play videos and turn parts of them into GIFs"
+Root: HKA; Subkey: "Software\GifMaker\Capabilities"; ValueType: string; ValueName: "ApplicationDescription"; ValueData: "Play videos and turn parts of them into GIFs; view pictures"
 Root: HKA; Subkey: "Software\RegisteredApplications"; ValueType: string; ValueName: "GifMaker"; ValueData: "Software\GifMaker\Capabilities"; Flags: uninsdeletevalue
 Root: HKA; Subkey: "Software\Classes\.mp4\OpenWithProgids"; ValueType: string; ValueName: "GifMaker.Video"; ValueData: ""; Flags: uninsdeletevalue
 Root: HKA; Subkey: "Software\Classes\Applications\GifMaker.exe\SupportedTypes"; ValueType: string; ValueName: ".mp4"; ValueData: ""
@@ -98,12 +98,37 @@ Root: HKA; Subkey: "Software\GifMaker\Capabilities\FileAssociations"; ValueType:
 Root: HKA; Subkey: "Software\Classes\.gif\OpenWithProgids"; ValueType: string; ValueName: "GifMaker.Video"; ValueData: ""; Flags: uninsdeletevalue
 Root: HKA; Subkey: "Software\Classes\Applications\GifMaker.exe\SupportedTypes"; ValueType: string; ValueName: ".gif"; ValueData: ""
 Root: HKA; Subkey: "Software\GifMaker\Capabilities\FileAssociations"; ValueType: string; ValueName: ".gif"; ValueData: "GifMaker.Video"
+; Pictures open in GifMaker too.
+Root: HKA; Subkey: "Software\Classes\GifMaker.Picture"; ValueType: string; ValueData: "Picture"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\GifMaker.Picture\DefaultIcon"; ValueType: string; ValueData: "{app}\GifMaker.exe,0"
+Root: HKA; Subkey: "Software\Classes\GifMaker.Picture\shell\open\command"; ValueType: string; ValueData: """{app}\GifMaker.exe"" ""%1"""
+Root: HKA; Subkey: "Software\Classes\.jpg\OpenWithProgids"; ValueType: string; ValueName: "GifMaker.Picture"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\Applications\GifMaker.exe\SupportedTypes"; ValueType: string; ValueName: ".jpg"; ValueData: ""
+Root: HKA; Subkey: "Software\GifMaker\Capabilities\FileAssociations"; ValueType: string; ValueName: ".jpg"; ValueData: "GifMaker.Picture"
+Root: HKA; Subkey: "Software\Classes\.jpeg\OpenWithProgids"; ValueType: string; ValueName: "GifMaker.Picture"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\Applications\GifMaker.exe\SupportedTypes"; ValueType: string; ValueName: ".jpeg"; ValueData: ""
+Root: HKA; Subkey: "Software\GifMaker\Capabilities\FileAssociations"; ValueType: string; ValueName: ".jpeg"; ValueData: "GifMaker.Picture"
+Root: HKA; Subkey: "Software\Classes\.png\OpenWithProgids"; ValueType: string; ValueName: "GifMaker.Picture"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\Applications\GifMaker.exe\SupportedTypes"; ValueType: string; ValueName: ".png"; ValueData: ""
+Root: HKA; Subkey: "Software\GifMaker\Capabilities\FileAssociations"; ValueType: string; ValueName: ".png"; ValueData: "GifMaker.Picture"
+Root: HKA; Subkey: "Software\Classes\.bmp\OpenWithProgids"; ValueType: string; ValueName: "GifMaker.Picture"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\Applications\GifMaker.exe\SupportedTypes"; ValueType: string; ValueName: ".bmp"; ValueData: ""
+Root: HKA; Subkey: "Software\GifMaker\Capabilities\FileAssociations"; ValueType: string; ValueName: ".bmp"; ValueData: "GifMaker.Picture"
+Root: HKA; Subkey: "Software\Classes\.webp\OpenWithProgids"; ValueType: string; ValueName: "GifMaker.Picture"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\Applications\GifMaker.exe\SupportedTypes"; ValueType: string; ValueName: ".webp"; ValueData: ""
+Root: HKA; Subkey: "Software\GifMaker\Capabilities\FileAssociations"; ValueType: string; ValueName: ".webp"; ValueData: "GifMaker.Picture"
+Root: HKA; Subkey: "Software\Classes\.tif\OpenWithProgids"; ValueType: string; ValueName: "GifMaker.Picture"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\Applications\GifMaker.exe\SupportedTypes"; ValueType: string; ValueName: ".tif"; ValueData: ""
+Root: HKA; Subkey: "Software\GifMaker\Capabilities\FileAssociations"; ValueType: string; ValueName: ".tif"; ValueData: "GifMaker.Picture"
+Root: HKA; Subkey: "Software\Classes\.tiff\OpenWithProgids"; ValueType: string; ValueName: "GifMaker.Picture"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\Applications\GifMaker.exe\SupportedTypes"; ValueType: string; ValueName: ".tiff"; ValueData: ""
+Root: HKA; Subkey: "Software\GifMaker\Capabilities\FileAssociations"; ValueType: string; ValueName: ".tiff"; ValueData: "GifMaker.Picture"
 
 [Run]
 ; A normal install offers to start the app and to open the default apps settings;
 ; a silent one (an update from inside the app) just starts it again.
 Filename: "{app}\GifMaker.exe"; Description: "Start GifMaker"; Flags: nowait postinstall skipifsilent
-Filename: "ms-settings:defaultapps?registeredAppUser=GifMaker"; Description: "Make GifMaker the default for videos (opens Windows Settings)"; Flags: shellexec postinstall skipifsilent unchecked
+Filename: "ms-settings:defaultapps?registeredAppUser=GifMaker"; Description: "Make GifMaker the default for videos or pictures (opens Windows Settings)"; Flags: shellexec postinstall skipifsilent unchecked
 Filename: "{app}\GifMaker.exe"; Flags: nowait; Check: ShouldRelaunch
 
 [Code]

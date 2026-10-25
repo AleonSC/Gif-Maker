@@ -186,11 +186,25 @@ def run(report_path):
             server.shutdown()
         return f"yt-dlp {version.stdout.strip()}, downloaded {os.path.getsize(path)} bytes"
 
+    def pictures():
+        made = []
+        for ext in (".jpg", ".png", ".bmp", ".webp", ".tiff"):
+            path = os.path.join(os.path.dirname(src), "picture" + ext)
+            subprocess.run([exe, "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                            "testsrc2=size=300x200", "-frames:v", "1", path], check=True,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            info = ff.probe(exe, path)
+            assert ff.is_image(path) and (info.width, info.height) == (300, 200), (ext, info)
+            assert ff.grab_frame(exe, path, 0, 150, 100), ext
+            made.append(ext)
+        return "opened " + " ".join(made)
+
     check("ffmpeg", ffmpeg)
     check("source video", source)
     check("gif", gif)
     check("animations", animations)
     check("video clip", video)
+    check("pictures", pictures)
     check("stream (.ts) file", stream_file)
     check("picture fingerprints", fingerprints)
     check("renaming", renaming)

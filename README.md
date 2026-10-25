@@ -56,6 +56,10 @@ Ctrl + mouse wheel over it) makes the thumbnails bigger or smaller, and the rows
 however many fit across; drag the divider between the video and the panel to make it wider
 or narrower. Thumbnails are remembered, so a folder you've opened before shows at once.
 
+Pictures open too (JPG, PNG, BMP, WebP, TIFF): the timeline and video controls step aside,
+the picture fills the window, and **Save copy...** rotates, flips or crops it and saves a
+copy. **‹ ›**, the Files panel, Delete and renaming work with pictures and videos alike.
+
 The **‹** and **›** buttons beside the video (or Page Up / Page Down) open the previous or
 next video in the same folder; tick **Autoplay** (top right) to have each one start playing
 as soon as it opens. With **One window** ticked (the default), videos you open from

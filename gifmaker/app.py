@@ -43,12 +43,14 @@ PLAY_SPEEDS = (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0)
 MAX_BOOST = 400  # percent
 MAX_THUMBNAILS = 300  # cached keyframes for instant scrubbing (~65 MB at most)
 SCRUB_SETTLE_MS = 120  # fetch the exact frame once the slider rests this long
-VIDEO_TYPES = [
-    ("Video files", "*.mp4 *.mkv *.mov *.avi *.webm *.wmv *.flv *.m4v *.mpg *.mpeg *.ts *.gif"),
-    ("All files", "*.*"),
-]
+_VIDEO_PATTERNS = "*.mp4 *.mkv *.mov *.avi *.webm *.wmv *.flv *.m4v *.mpg *.mpeg *.ts *.gif"
+_IMAGE_PATTERNS = " ".join("*" + ext for ext in sorted(ff.IMAGE_EXTENSIONS))
+VIDEO_TYPES = [("Video files", _VIDEO_PATTERNS), ("All files", "*.*")]
+OPEN_TYPES = [("Videos and pictures", f"{_VIDEO_PATTERNS} {_IMAGE_PATTERNS}"),
+              ("Videos", _VIDEO_PATTERNS), ("Pictures", _IMAGE_PATTERNS), ("All files", "*.*")]
 NO_TRANSFORM = {"rotate": 0, "flip": False, "crop": (0.0, 0.0, 1.0, 1.0)}
-VIDEO_EXTENSIONS = {pattern[1:] for pattern in VIDEO_TYPES[0][1].split()}
+VIDEO_EXTENSIONS = {pattern[1:] for pattern in _VIDEO_PATTERNS.split()}
+MEDIA_EXTENSIONS = VIDEO_EXTENSIONS | ff.IMAGE_EXTENSIONS  # what folder browsing shows
 # Keyboard shortcuts are ignored while one of these has focus.
 _NO_SHORTCUT_WIDGETS = (ttk.Entry, tk.Entry, ttk.Combobox, ttk.Spinbox, ttk.Button, ttk.Checkbutton)
 
@@ -70,6 +72,7 @@ class GifMakerApp:
         self.video_width = 0
         self.video_height = 0
         self.has_audio = False
+        self.is_image = False  # a still picture is open (no timeline, playing or GIFs)
         self.transform = dict(NO_TRANSFORM)  # rotate/flip/crop last used for saving
         self.sections = []  # (start, end) parts to keep when saving a video
         self.section_sel = None  # index of the section the markers are editing
@@ -511,10 +514,11 @@ class GifMakerApp:
         Tooltip(self.video_btn, "Save the sections (or just the clip) as a new video")
         self.snap_btn = ttk.Button(bar, text="Snapshot...", command=self.save_snapshot)
         self.snap_btn.pack(side="right", padx=(10, 0))
-        Tooltip(self.snap_btn, "Save the frame you're looking at as a picture")
+        Tooltip(self.snap_btn, lambda: "Rotate, flip or crop the picture and save a copy"
+                if self.is_image else "Save the frame you're looking at as a picture")
 
         # The clip and the sections.
-        edit = ttk.Frame(main)
+        edit = self.edit_frame = ttk.Frame(main)
         edit.columnconfigure(1, weight=1)
         rows = []
         for r, heading in enumerate(("Clip", "Sections")):
@@ -674,7 +678,8 @@ class GifMakerApp:
         if self.busy:
             return
         self.stop_playback()
-        path = path or filedialog.askopenfilename(title="Open video", filetypes=VIDEO_TYPES)
+        path = path or filedialog.askopenfilename(title="Open a video or picture",
+                                                  filetypes=OPEN_TYPES)
         if not path:
             return
         if self.sections and not messagebox.askyesno(
@@ -688,6 +693,9 @@ class GifMakerApp:
             messagebox.showerror("Could not open video", str(e))
             return
         self.video_path = path
+        self.is_image = ff.is_image(path)
+        if self.is_image:
+            info = info._replace(duration=0.0, has_audio=False)
         self.duration = duration = info.duration
         self.video_fps = info.fps or 30.0
         self.video_width, self.video_height = w, h = info.width, info.height
@@ -695,21 +703,26 @@ class GifMakerApp:
         self.sound_check.config(state="normal" if info.has_audio else "disabled")
         self.transform = dict(NO_TRANSFORM)
         self.clear_sections()
-        details = [ff.format_time(duration), f"{w}\u00D7{h}", f"{self.video_fps:g} fps"]
-        if not info.has_audio:
-            details.append("no sound")
+        if self.is_image:
+            details = [f"{w}\u00D7{h}", "picture"]
+        else:
+            details = [ff.format_time(duration), f"{w}\u00D7{h}", f"{self.video_fps:g} fps"]
+            if not info.has_audio:
+                details.append("no sound")
         self.file_label.config(text=f"{os.path.basename(path)}    " + "  \u00B7  ".join(details),
                                style="TLabel")
         self.timeline.set_duration(duration)
         self.video_token += 1
         self.shown_t = None
-        self._build_thumbs()
+        if not self.is_image:
+            self._build_thumbs()
         self.start_text.set(ff.format_time(0))
         self.end_text.set(ff.format_time(min(duration, 3.0)))
         self.status.set("")
+        self._apply_media_mode()
         self._update_nav()
         self._seek(0.0)
-        if self.autoplay.get():
+        if self.autoplay.get() and not self.is_image:
             self._start_playback(0.0, None, clip=False)
 
     # ------------------------------------------------- folder navigation
@@ -724,7 +737,7 @@ class GifMakerApp:
         def natural(name):  # "clip 2" before "clip 10"
             return [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", name.lower())]
 
-        names = [n for n in names if os.path.splitext(n)[1].lower() in VIDEO_EXTENSIONS
+        names = [n for n in names if os.path.splitext(n)[1].lower() in MEDIA_EXTENSIONS
                  and os.path.isfile(os.path.join(folder, n))]
         return [os.path.join(folder, n) for n in sorted(names, key=natural)]
 
@@ -806,12 +819,36 @@ class GifMakerApp:
             self.root.attributes("-fullscreen", True)
         else:
             self.root.attributes("-fullscreen", False)
-            for widget, _ in self._rows:  # re-pack every row in its original order
-                widget.pack_forget()
-            for widget, packing in self._rows:
-                widget.pack(packing)
+            self._repack()
             if getattr(self, "_files_before_fullscreen", False):
                 self.root.after(50, lambda: self.toggle_files(True))
+
+    def _repack(self):
+        """Pack the window's rows in their order, leaving out the ones that don't
+        apply now (fullscreen keeps only the video's; a picture has no timeline)."""
+        for widget, _ in self._rows:
+            widget.pack_forget()
+        for widget, packing in self._rows:
+            if self.fullscreen and widget in self._windowed_only:
+                continue
+            if self.is_image and widget in (self.scrub_bar, self.edit_frame):
+                continue
+            widget.pack(packing)
+
+    def _apply_media_mode(self):
+        """Show the video controls for a video, and step them aside for a picture."""
+        shown = self.scrub_bar.winfo_manager() == "pack"
+        if shown == self.is_image:
+            self._repack()
+        for child in self.play_bar.winfo_children():
+            if child is self.snap_btn or not isinstance(child, ttk.Widget) or \
+                    isinstance(child, (ttk.Frame, ttk.Label)):
+                continue
+            child.state(["disabled"] if self.is_image else ["!disabled"])
+        if not self.is_image:
+            self.sound_check.state(["!disabled"] if self.has_audio or not self.video_path
+                                   else ["disabled"])
+        self.snap_btn.config(text="Save copy..." if self.is_image else "Snapshot...")
 
     def _on_view_resize(self, event):
         """The video area changed size: centre the picture now, re-render it shortly."""
@@ -882,6 +919,8 @@ class GifMakerApp:
         self.video_fps = 0.0
         self.video_width = self.video_height = 0
         self.has_audio = False
+        self.is_image = False
+        self._apply_media_mode()
         self.transform = dict(NO_TRANSFORM)
         self.clear_sections()
         self.thumbs = []
@@ -1043,6 +1082,8 @@ class GifMakerApp:
 
     # ---------------------------------------------------------- playback
     def toggle_play(self):
+        if self.is_image:
+            return
         if self.playing and not self.play_clip:
             self.stop_playback()
             return
@@ -1054,6 +1095,8 @@ class GifMakerApp:
         self._start_playback(start, None, clip=False)
 
     def toggle_play_clip(self):
+        if self.is_image:
+            return
         if self.playing and self.play_clip:
             self.stop_playback()
             return
@@ -1132,7 +1175,7 @@ class GifMakerApp:
         base = os.path.splitext(os.path.basename(self.video_path))[0]
         dst = filedialog.asksaveasfilename(
             title="Save snapshot as", defaultextension=".png",
-            initialfile=f"{base}_{t:.2f}s.png",
+            initialfile=f"{base} copy.png" if self.is_image else f"{base}_{t:.2f}s.png",
             initialdir=os.path.dirname(self.video_path),
             filetypes=[("PNG image", "*.png"), ("JPEG image", "*.jpg *.jpeg")])
         if not dst:
@@ -1156,6 +1199,8 @@ class GifMakerApp:
                 show_in_folder(dst)
 
     def step(self, delta):
+        if self.is_image:
+            return
         if not self.video_path:
             return
         if delta == "-f":
@@ -1181,6 +1226,8 @@ class GifMakerApp:
 
     # ------------------------------------------------------------- range
     def set_start(self):
+        if self.is_image:
+            return
         t = self.position.get()
         try:
             _, end = self._range()
@@ -1191,6 +1238,8 @@ class GifMakerApp:
         self.start_text.set(ff.format_time(t))
 
     def set_end(self):
+        if self.is_image:
+            return
         t = self.position.get()
         try:
             start, _ = self._range()
@@ -1234,6 +1283,8 @@ class GifMakerApp:
 
     # ---------------------------------------------------------- sections
     def _section_button(self):
+        if self.is_image:
+            return
         if self.section_sel is not None:  # "Done editing"
             self._select_section(None)
             return
@@ -1322,7 +1373,7 @@ class GifMakerApp:
     # -------------------------------------------------------------- make
     def make_gif(self):
         """Make an animation (GIF, WebP or PNG) of the markers or of each section."""
-        if self.busy:
+        if self.busy or self.is_image:
             return
         if not self.video_path:
             messagebox.showinfo("GifMaker", "Open a video first.")
@@ -1411,7 +1462,7 @@ class GifMakerApp:
     # ------------------------------------------------------------- video
     def save_clip_video(self):
         """Save the sections (or the marker range if there are none) as a new video."""
-        if self.busy:
+        if self.busy or self.is_image:
             return
         if not self.video_path:
             messagebox.showinfo("GifMaker", "Open a video first.")
