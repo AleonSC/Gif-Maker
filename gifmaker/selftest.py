@@ -75,6 +75,29 @@ def run(report_path):
         assert ff.grab_frame(exe, ts, 1.0, 160, 90), "no frame from the .ts"
         return f"{info} -> cut {out.duration:.2f} s"
 
+    def renaming():
+        from . import files
+        folder = tempfile.mkdtemp()
+        for name, text in (("1.mp4", "one"), ("2.mp4", "two"), ("Clip.MP4", "clip"),
+                           ("hidden.mp4", "hidden")):
+            with open(os.path.join(folder, name), "w") as f:
+                f.write(text)
+        if sys.platform == "win32":  # mark one file hidden: it must be left alone
+            import ctypes
+            ctypes.windll.kernel32.SetFileAttributesW(os.path.join(folder, "hidden.mp4"), 2)
+        names = files.list_files(folder, {".mp4"})
+        assert "hidden.mp4" not in names or sys.platform != "win32", names
+        names = [n for n in names if n != "hidden.mp4"]
+        # swap 1 and 2, and change only the case of Clip.MP4
+        plan = [("1.mp4", "2.mp4"), ("2.mp4", "1.mp4"), ("Clip.MP4", "clip.mp4")]
+        files.rename_all(folder, plan)
+        read = lambda n: open(os.path.join(folder, n)).read()
+        assert (read("1.mp4"), read("2.mp4")) == ("two", "one")
+        assert "clip.mp4" in os.listdir(folder), os.listdir(folder)
+        files.rename_all(folder, [(new, old) for old, new in plan])
+        assert sorted(os.listdir(folder)) == sorted(["1.mp4", "2.mp4", "Clip.MP4", "hidden.mp4"])
+        return f"listed {names}; swap, case change and undo all fine"
+
     def recycle_bin():
         from . import files
         path = os.path.join(tempfile.mkdtemp(), "delete me.txt")
@@ -125,6 +148,7 @@ def run(report_path):
     check("animations", animations)
     check("video clip", video)
     check("stream (.ts) file", stream_file)
+    check("renaming", renaming)
     check("delete to the Recycle Bin", recycle_bin)
     check("sound", sound)
     check("drag and drop", drag_and_drop)

@@ -102,6 +102,13 @@ def _style_dark(style, root):
     style.configure("Horizontal.TScale", background=c["button"], troughcolor=c["trough"])
     style.configure("Horizontal.TProgressbar", background=c["select"], troughcolor=c["trough"])
     style.configure("Nav.TButton", background=c["button"])
+    style.configure("Treeview", background=c["field"], fieldbackground=c["field"],
+                    foreground=c["fg"], bordercolor=c["border"])
+    style.map("Treeview", background=[("selected", c["select"])],
+              foreground=[("selected", c["select_fg"])])
+    style.configure("Treeview.Heading", background=c["button"], foreground=c["fg"],
+                    bordercolor=c["border"])
+    style.map("Treeview.Heading", background=[("active", c["button_hover"])])
 
 
 def _style_clam_light(style):
@@ -131,6 +138,13 @@ def _style_clam_light(style):
     style.configure("Horizontal.TScale", background=bg, troughcolor="#bab5ab")
     style.configure("Horizontal.TProgressbar", background="#4a6984", troughcolor="#bab5ab")
     style.configure("Nav.TButton", background=bg)
+    style.configure("Treeview", background="#ffffff", fieldbackground="#ffffff",
+                    foreground="#000000", bordercolor="#9e9a91")
+    style.map("Treeview", background=[("selected", "#4a6984")],
+              foreground=[("selected", "#ffffff")])
+    style.configure("Treeview.Heading", background=bg, foreground="#000000",
+                    bordercolor="#9e9a91")
+    style.map("Treeview.Heading", background=[("active", "#eeebe7")])
 
 
 def _all_windows(root):

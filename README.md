@@ -48,6 +48,13 @@ its corner to resize it (the picture re-sharpens to the new size), click it to p
 pause, and use its green and red markers to loop part of it. **Arrange** tiles them neatly,
 and each one has its own sound switch (off to begin with).
 
+**Rename files** (top right) renames everything in a folder with a numbered pattern,
+like `1, 2, 3` or `videogames-1, videogames-2` (with optional zero-padding), in name, date,
+size or **colour** order. Colour order groups videos by the average colour of their
+pictures (reds, oranges, yellows, greens, blues, purples, then greys), so similar-looking
+videos end up next to each other. It shows the old and new names before changing
+anything, and **Undo last rename** puts them back.
+
 **Dark mode** (top right) switches the whole app to dark colours, title bars included. It's
 remembered, and the first time it follows your Windows setting.
 

@@ -1,7 +1,10 @@
-"""Deleting files the friendly way: to the Recycle Bin on Windows."""
+"""File chores: deleting to the Recycle Bin on Windows, and renaming in bulk."""
 
+import json
 import os
+import re
 import sys
+import uuid
 
 
 def where_it_goes():
@@ -43,3 +46,136 @@ def send_to_trash(path):
     result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
     if result != 0 or op.fAnyOperationsAborted or os.path.exists(path):
         raise OSError(f"Windows couldn't move it to the Recycle Bin (code {result}).")
+
+
+# ------------------------------------------------------------ renaming
+SKIP_NAMES = {"desktop.ini", "thumbs.db", ".ds_store"}
+TEMP_PREFIX = ".gifmaker-rename-"
+INVALID_NAME_CHARS = '<>:"/\\|?*'
+
+
+def natural_key(name):
+    """Sort key that puts "clip 2" before "clip 10", like Explorer."""
+    return [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", name.lower())]
+
+
+def _hidden(path, name):
+    if name.startswith(".") or name.lower() in SKIP_NAMES:
+        return True
+    attributes = getattr(os.stat(path), "st_file_attributes", 0)
+    return bool(attributes & 0x6)  # FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM
+
+
+def list_files(folder, extensions=None):
+    """Names of the (non-hidden) files directly in folder, in natural order.
+
+    extensions limits it to those (lower-case, with the dot), e.g. {".mp4"}.
+    """
+    names = []
+    for name in os.listdir(folder):
+        path = os.path.join(folder, name)
+        if not os.path.isfile(path) or _hidden(path, name):
+            continue
+        if extensions is None or os.path.splitext(name)[1].lower() in extensions:
+            names.append(name)
+    return sorted(names, key=natural_key)
+
+
+def clean_prefix(text):
+    """A prefix that's safe in a Windows file name."""
+    text = "".join(c for c in text if c not in INVALID_NAME_CHARS and ord(c) >= 32)
+    return text.strip().rstrip(".")
+
+
+def numbered_names(names, prefix="", separator="-", start=1, digits=None):
+    """New names for files in the given order: 'prefix-1.ext', or '1.ext' with no prefix.
+
+    digits pads the numbers with zeros ("auto" pads to the widest number), which
+    keeps the order in apps that don't sort numbers the way Explorer does.
+    """
+    prefix = clean_prefix(prefix)
+    separator = clean_prefix(separator) if prefix else ""
+    last = start + len(names) - 1
+    width = len(str(last)) if digits == "auto" else (digits or 0)
+    result = []
+    for i, name in enumerate(names):
+        number = str(start + i).zfill(width)
+        result.append(f"{prefix}{separator}{number}{os.path.splitext(name)[1]}")
+    return result
+
+
+def rename_all(folder, plan):
+    """Rename files in folder: plan is a list of (old name, new name).
+
+    Everything is first moved to temporary names and then to the new ones, so
+    names can swap around. If anything fails, what was done is put back and
+    OSError is raised. Returns the (old, new) pairs that changed.
+    """
+    plan = [(old, new) for old, new in plan if old != new]
+    sources = {os.path.normcase(old) for old, _ in plan}
+    targets = [os.path.normcase(new) for _, new in plan]
+    if len(set(targets)) != len(targets):
+        raise OSError("Two files would get the same name.")
+    for _, new in plan:
+        if os.path.exists(os.path.join(folder, new)) and os.path.normcase(new) not in sources:
+            raise FileExistsError(f"“{new}” already exists and isn't one of the files "
+                                  "being renamed.")
+    tag = uuid.uuid4().hex[:8]
+    done = []  # (from, to) names, in the order they happened
+    originals = {}  # temporary name -> the file's original name, for messages
+
+    def move(src, dst):
+        os.rename(os.path.join(folder, src), os.path.join(folder, dst))
+        done.append((src, dst))
+
+    try:
+        temps = []
+        for i, (old, new) in enumerate(plan):
+            temp = f"{TEMP_PREFIX}{tag}-{i}{os.path.splitext(new)[1]}"
+            originals[temp] = old
+            move(old, temp)
+            temps.append((temp, new))
+        for temp, new in temps:
+            move(temp, new)
+    except OSError as e:
+        for src, dst in reversed(done):
+            try:
+                os.rename(os.path.join(folder, dst), os.path.join(folder, src))
+            except OSError:
+                pass
+        name = os.path.basename(getattr(e, "filename", None) or "")
+        detail = f" ({originals.get(name, name)})" if name else ""
+        raise OSError(f"{e.strerror or e}{detail}. Nothing was renamed.") from e
+    return plan
+
+
+def _undo_path():
+    base = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(base, "GifMaker", "last_rename.json")
+
+
+def save_undo(folder, renamed):
+    """Remember a rename so it can be undone, even after restarting."""
+    try:
+        os.makedirs(os.path.dirname(_undo_path()), exist_ok=True)
+        with open(_undo_path(), "w", encoding="utf-8") as f:
+            json.dump({"folder": folder, "renamed": renamed}, f)
+    except OSError:
+        pass
+
+
+def load_undo():
+    """(folder, [(old, new), ...]) of the last rename, or None."""
+    try:
+        with open(_undo_path(), encoding="utf-8") as f:
+            data = json.load(f)
+        return data["folder"], [tuple(pair) for pair in data["renamed"]]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def forget_undo():
+    try:
+        os.remove(_undo_path())
+    except OSError:
+        pass

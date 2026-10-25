@@ -1,5 +1,6 @@
 """Thin wrappers around ffmpeg for probing videos, grabbing frames and making GIFs."""
 
+import colorsys
 import os
 import queue
 import re
@@ -344,6 +345,44 @@ def merge_sections(sections):
         else:
             merged.append((start, end))
     return merged
+
+
+def average_color(ffmpeg, path):
+    """The average colour (r, g, b) of a video's pictures, or None if unreadable.
+
+    Takes frames at 20%, 50% and 80% through (so a black intro or outro doesn't
+    count for much); images just use their one picture.
+    """
+    try:
+        info = probe(ffmpeg, path)
+        times = [info.duration * f for f in (0.2, 0.5, 0.8)] if info.duration > 1 else [0.0]
+    except RuntimeError:
+        times = [0.0]  # still images have no duration
+    totals, count = [0, 0, 0], 0
+    for t in times:
+        data = grab_frame(ffmpeg, path, t, 16, 16, fast=True, pre_vf="scale=16:16:flags=area")
+        if not data:
+            continue
+        pixels = data.split(b"\n", 3)[-1]  # after the PPM header lines
+        n = len(pixels) // 3
+        if not n:
+            continue
+        for c in range(3):
+            totals[c] += sum(pixels[c::3]) / n
+        count += 1
+    return tuple(round(v / count) for v in totals) if count else None
+
+
+def color_sort_key(rgb):
+    """Sort key that groups colours by hue (red, orange, yellow, green, blue, purple),
+    darker to lighter within each; greys, black and white go last; unknown at the end."""
+    if rgb is None:
+        return (2, 0, 0.0)
+    h, l, s = colorsys.rgb_to_hls(*(v / 255 for v in rgb))
+    if s < 0.15 or l < 0.08 or l > 0.93:
+        return (1, 0, l)
+    hue_group = int(((h + 1 / 24) % 1.0) * 12)  # twelve 30-degree groups, red centred in the first
+    return (0, hue_group, l)
 
 
 def build_clip_command(ffmpeg, src, dst, sections, has_audio, pre_vf=""):

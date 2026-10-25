@@ -17,6 +17,7 @@ from . import files
 from . import theme
 from .export_dialog import ExportDialog
 from .grid_player import GridPlayer
+from .rename_tool import RenameTool
 from .player import Player
 from .timeline import Timeline
 
@@ -102,6 +103,7 @@ class GifMakerApp:
         self.cancel_requested = False
         self.fullscreen = False
         self.grid_window = None
+        self.rename_window = None
         self.view_w, self.view_h = PREVIEW_W, PREVIEW_H  # size of the video area
 
         self.player = Player(root, ffmpeg, self._on_play_frame, self._on_play_end)
@@ -146,6 +148,50 @@ class GifMakerApp:
         if self.video_path:
             self.grid_window.after(100, lambda: self.grid_window and self.grid_window.add(self.video_path))
 
+    def open_rename_tool(self):
+        """Open the folder renaming tool (on the current video's folder), or bring it forward."""
+        if self.rename_window is not None:
+            self.rename_window.lift()
+            return
+        folder = os.path.dirname(os.path.abspath(self.video_path)) if self.video_path else None
+        self.rename_window = RenameTool(self, VIDEO_EXTENSIONS, folder)
+
+    def release_folder(self, folder):
+        """Let go of any video from folder that's open (Windows can't rename open files).
+
+        Returns a function to call afterwards with {old path (normcased): new path};
+        it reopens the main window's video under its new name, with its sections.
+        """
+        key = os.path.normcase(os.path.abspath(folder))
+
+        def in_folder(path):
+            return path and os.path.normcase(os.path.dirname(os.path.abspath(path))) == key
+
+        if self.grid_window is not None:
+            for tile in list(self.grid_window.tiles):
+                if in_folder(tile.path):
+                    self.grid_window.remove(tile)
+        if not in_folder(self.video_path):
+            return lambda mapping: None
+        path, position = self.video_path, self.position.get()
+        sections, start, end = list(self.sections), self.start_text.get(), self.end_text.get()
+        self.sections = []  # kept above; don't ask about losing them
+        self.clear_video()
+
+        def reopen(mapping):
+            new = mapping.get(os.path.normcase(os.path.abspath(path)), path)
+            if not os.path.exists(new):
+                return
+            self.open_video(new)
+            if self.video_path == new:  # put the work back as it was
+                self.sections = sections
+                self._sections_changed()
+                self.start_text.set(start)
+                self.end_text.set(end)
+                self._seek(position)
+
+        return reopen
+
     def close(self):
         # Stop the sound before Tk and Python shut down, or PortAudio can crash on exit.
         if self.grid_window is not None:
@@ -172,6 +218,10 @@ class GifMakerApp:
         Tooltip(delete, "Delete this video and open the next one in the folder  (Delete key)")
         grid = ttk.Button(top, text="Grid player", command=self.open_grid)
         grid.pack(side="right")
+        rename = ttk.Button(top, text="Rename files", command=self.open_rename_tool)
+        rename.pack(side="right", padx=(0, 6))
+        Tooltip(rename, "Rename everything in a folder with a numbered pattern, "
+                        "in name, date, size or colour order")
         ttk.Checkbutton(top, text="Dark mode", variable=self.dark_mode,
                         command=self._toggle_dark).pack(side="right", padx=(0, 12))
         Tooltip(grid, "Play several videos at once, each in a panel you can move, resize and loop")
