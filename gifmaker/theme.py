@@ -221,24 +221,33 @@ def system_prefers_dark():
         return False
 
 
-def load_dark_setting():
+def load_setting(name, default):
+    """A value saved with save_setting(), or default."""
     try:
         with open(_settings_path(), encoding="utf-8") as f:
-            return bool(json.load(f)["dark"])
+            return json.load(f)[name]
     except (OSError, ValueError, KeyError, TypeError):
-        return system_prefers_dark()
+        return default
 
 
-def save_dark_setting(use_dark):
+def save_setting(name, value):
     path = _settings_path()
     try:
         settings = {}
         if os.path.exists(path):
             with open(path, encoding="utf-8") as f:
                 settings = json.load(f)
-        settings["dark"] = use_dark
+        settings[name] = value
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(settings, f)
     except (OSError, ValueError):
         pass
+
+
+def load_dark_setting():
+    return bool(load_setting("dark", system_prefers_dark()))
+
+
+def save_dark_setting(use_dark):
+    save_setting("dark", use_dark)

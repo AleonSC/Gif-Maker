@@ -44,14 +44,17 @@ class Player:
         if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(timeout=1.0)
 
-    def start(self, path, start, size, fps, end=None, pre_vf="", speed=1.0, sound=False):
+    def start(self, path, start, size, fps, end=None, pre_vf="", speed=1.0, sound=False,
+              duration=None, post_vf=""):
+        """Play from start. Stops at the video time `end`, or after `duration` source
+        seconds (frames' times then just count up, e.g. for a reversed post_vf)."""
         self.stop()
         self._token += 1
         self.playing = True
         self.end = end
         w, h = size
-        self._proc = ff.open_raw_stream(self.ffmpeg, path, start, w, h, fps,
-                                        pre_vf=pre_vf, speed=speed)
+        self._proc = ff.open_raw_stream(self.ffmpeg, path, start, w, h, fps, duration=duration,
+                                        pre_vf=pre_vf, speed=speed, post_vf=post_vf)
         self._audio = None
         if sound:
             self._audio = audio_out.open_audio(self.ffmpeg, path, start, self._gain, speed)

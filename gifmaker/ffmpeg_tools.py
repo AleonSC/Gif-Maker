@@ -281,6 +281,18 @@ def animation_seconds(start, end, speed, direction):
     return seconds * 2 if direction == "Boomerang" else seconds
 
 
+def direction_filters(direction):
+    """Filters that play frames in the given direction (one of DIRECTIONS)."""
+    if direction == "Reverse":
+        return "reverse"
+    if direction == "Boomerang":
+        # The reversed copy skips its first frame, which is the forward clip's
+        # last one, so the turn-around doesn't stutter.
+        return ("split[fw][bw];[bw]reverse,trim=start_frame=1,setpts=PTS-STARTPTS[rv];"
+                "[fw][rv]concat=n=2:v=1:a=0")
+    return ""
+
+
 def build_animation_command(ffmpeg, src, dst, start, end, fps, width, speed=1.0,
                             fmt="GIF", direction="Forward", colors=256, loop=True,
                             pre_vf="", dither="sierra2_4a"):
@@ -298,14 +310,7 @@ def build_animation_command(ffmpeg, src, dst, start, end, fps, width, speed=1.0,
     filters.append(f"fps={fps}")
     if width > 0:
         filters.append(f"scale='min({width},iw)':-2:flags=lanczos")
-    graph = chain(*filters)
-    if direction == "Reverse":
-        graph += ",reverse"
-    elif direction == "Boomerang":
-        # The reversed copy skips its first frame, which is the forward clip's
-        # last one, so the turn-around doesn't stutter.
-        graph += (",split[fw][bw];[bw]reverse,trim=start_frame=1,setpts=PTS-STARTPTS[rv];"
-                  "[fw][rv]concat=n=2:v=1:a=0")
+    graph = chain(*filters, direction_filters(direction))
     if fmt == "GIF":
         graph += (",split[a][b];"
                   f"[a]palettegen=max_colors={colors}:stats_mode=diff[p];"
@@ -455,10 +460,11 @@ def fit_size(width, height, max_w, max_h, upscale=False):
 
 
 def open_raw_stream(ffmpeg, path, start, width, height, fps, duration=None,
-                    pre_vf="", speed=1.0):
+                    pre_vf="", speed=1.0, post_vf=""):
     """Start ffmpeg decoding the video as raw RGB frames of width x height on stdout.
 
     duration is in source seconds; output frames come at `fps` after the speed change.
+    pre_vf goes before the speed and frame-rate change, post_vf after them.
     """
     seek, pre, origin = _seek(path, start)
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", *seek]
@@ -467,8 +473,9 @@ def open_raw_stream(ffmpeg, path, start, width, height, fps, duration=None,
     setpts = f"setpts=PTS/{speed}" if speed != 1.0 else ""
     cmd += [
         "-i", path, "-an", "-sn",
-        "-vf", chain(_trim_video(origin), pre_vf, setpts, f"fps={fps}",
+        "-vf", chain(_trim_video(origin), pre_vf, setpts, f"fps={fps}", post_vf,
                      f"scale={width}:{height}:flags=bilinear"),
+        "-fps_mode", "passthrough",  # one picture per filtered frame, never duplicated
         "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
     ]
     return subprocess.Popen(

@@ -15,13 +15,14 @@ A small Windows desktop app for turning a section of a video into a GIF.
    section (see below).
 4. Click **Play clip** to loop just that section. You can drag the markers while it loops
    to fine-tune it.
-5. Choose FPS, width, speed, colours and looping on the **Animation** row, then click
-   **Make GIF...** (bottom right).
-   Animations can be up to 30 seconds long (after the speed change; a boomerang counts twice).
-6. A preview window plays the GIF's frames on a loop. Pick the **Format** (GIF, WebP or
-   animated PNG: the last two keep full colour and are often smaller) and **Direction**
-   (forward, reverse, or boomerang: forward then back, which loops smoothly) there, and
-   rotate, flip or crop it (drag on
+5. Click **Make GIF...** (right end of the play bar). Animations can be up to 30 seconds
+   long (after the speed change; a boomerang counts twice).
+6. The Make GIF window plays a live preview on a loop. Set the **Format** (GIF, WebP or
+   animated PNG: the last two keep full colour and are often smaller), **Direction**
+   (forward, reverse, or boomerang: forward then back, which loops smoothly), **Speed**,
+   **FPS**, **Width**, **Colours** and looping there: the preview follows each change, so
+   you see the boomerang, the frame rate, the pixel size and the colours straight away.
+   They're remembered for next time. You can also rotate, flip or crop it (drag on
    the picture; pick a crop shape like 1:1 or 16:9 to lock it). **Preview result** makes the
    real file and plays it, with its true colours and file size; saving then just keeps it.
    If you've made sections, you can save each one as its own file instead.
@@ -36,13 +37,15 @@ the orange strip under the timeline (click one to change it with the markers, th
 **✓ Done**), and **Save video...** joins them in time order and cuts out the rest, or
 saves each section as its own numbered video.
 
-The speed box, **Sound** switch and volume slider on the right of the play bar set the playback speed (the sound keeps its
-pitch) and volume; **Boost** makes quiet videos up to 4x louder (very loud parts may distort). **Delete...** (or the Delete key) deletes the open video, after
+The speed box, **Sound** switch and volume slider on the play bar set the playback speed (the sound keeps its
+pitch) and volume; the second, smaller slider (**Boost**) makes quiet videos up to 4x louder (very loud parts may distort). **Delete...** (or the Delete key) deletes the open video, after
 asking, to the Recycle Bin, and opens the next one in the folder.
 
 The **‹** and **›** buttons beside the video (or Page Up / Page Down) open the previous or
-next video in the same folder. **⛶** on the play bar (or F11, or double-clicking the video)
-shows the video fullscreen with the timeline and play bar underneath; Esc goes back.
+next video in the same folder; tick **Autoplay** (top right) to have each one start playing
+as soon as it opens. Resize the window to make the video bigger or smaller; the picture
+scales to fit. **⛶** next to the time (or F11, or double-clicking the video) shows the video
+fullscreen with the timeline and play bar underneath; Esc goes back.
 
 **Grid player** (top right) opens a window for playing several videos at once. Add them
 with **Add videos...** or by dragging them in from Explorer; drag a video to move it, drag

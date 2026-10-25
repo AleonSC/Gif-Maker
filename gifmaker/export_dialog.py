@@ -10,6 +10,7 @@ from tkinter import messagebox, ttk
 from . import ffmpeg_tools as ff
 from . import theme
 from .player import Player
+from .tooltip import Tooltip
 
 VIEW_W, VIEW_H = 720, 480
 HANDLE = 10  # grab distance for crop corners, in pixels
@@ -24,6 +25,9 @@ ASPECTS = {
     "9:16": 9 / 16,
 }
 FULL = (0.0, 0.0, 1.0, 1.0)
+ANIMATION_DEFAULTS = {"fmt": "GIF", "direction": "Forward", "fps": 15, "width": 480,
+                      "speed": 1.0, "colors": 256, "loop": True}
+LIVE_DELAY_MS = 300  # wait for typing to pause before restarting the live preview
 # ffmpeg 4.2 can write animated WebP but not read it back, so its result can't be played.
 PLAYABLE_RESULTS = ("GIF", "Animated PNG")
 
@@ -40,19 +44,20 @@ class ExportDialog(tk.Toplevel):
     transform is a dict with rotate (degrees clockwise), flip (mirror) and crop
     ((x, y, w, h) fractions of the rotated frame).
 
-    For animations the user also picks the format (from `formats`) and direction
-    here, and render(transform, start, end, dst, fmt, direction) returns the ffmpeg
-    command that makes the file; "Preview result" uses it to make and play the
-    real thing. Each animation must be at most max_seconds long.
+    For animations the user also sets the options here (format from `formats`,
+    direction, fps, width, speed, colours, loop; `options` holds the starting
+    ones), and the preview plays live with them: direction, speed, frame rate,
+    size and (for GIFs) colours. render(transform, start, end, dst, options)
+    returns the ffmpeg command that makes the file; "Preview result" uses it to
+    make and play the real thing. Each animation must be at most max_seconds long.
 
     on_save(transform, choice_index, rendered, options) is called when Save is
     clicked; rendered is the path of an already-made result that matches, or None,
-    and options holds the animation's fmt and direction.
+    and options holds the animation options.
     """
 
     def __init__(self, app, mode, transform, on_save, time=0.0, choices=None, fps=15,
-                 width=0, speed=1.0, sound=False, fmt="GIF", direction="Forward", render=None,
-                 formats=("GIF",), max_seconds=None):
+                 sound=False, options=None, render=None, formats=("GIF",), max_seconds=None):
         super().__init__(app.root)
         self.app = app
         self.mode = mode
@@ -61,11 +66,17 @@ class ExportDialog(tk.Toplevel):
         self.choices = choices or [("", [(time, time)], False)]
         self.choice = tk.IntVar(value=0)
         self.section = 0  # which section of the chosen ones the preview is playing
-        self.fps, self.out_width, self.speed = fps, width, speed
         self.sound = sound
-        self.fmt_var = tk.StringVar(value=fmt if fmt in formats else formats[0])
-        self.direction_var = tk.StringVar(value=direction)
         self.formats, self.render, self.max_seconds = formats, render, max_seconds
+        opts = dict(ANIMATION_DEFAULTS, **(options or {}))
+        if opts["fmt"] not in formats:
+            opts["fmt"] = formats[0]
+        if mode != "gif":  # videos play at their own speed and size
+            opts.update(fps=fps, speed=1.0, width=0)
+        self.opts = opts  # the options in use (the last valid ones typed)
+        self.vars = {name: (tk.BooleanVar if name == "loop" else tk.StringVar)(value=value)
+                     for name, value in opts.items()}
+        self.live_job = None
         self.rotate = transform["rotate"] % 360
         self.flip = transform["flip"]
         self.crop = list(transform["crop"])
@@ -111,22 +122,7 @@ class ExportDialog(tk.Toplevel):
         aspect.bind("<<ComboboxSelected>>", lambda e: self._apply_aspect())
         ttk.Button(tools, text="Reset", command=self._reset).pack(side="left", padx=4)
         if self.mode == "gif":
-            anim = ttk.Frame(main)
-            anim.pack(fill="x", pady=(0, 6))
-            ttk.Label(anim, text="Format").pack(side="left")
-            fmt = ttk.Combobox(anim, textvariable=self.fmt_var, values=self.formats, width=13,
-                               state="readonly")
-            fmt.pack(side="left", padx=(4, 16))
-            fmt.bind("<<ComboboxSelected>>", lambda e: self._options_changed())
-            ttk.Label(anim, text="Direction").pack(side="left")
-            direction = ttk.Combobox(anim, textvariable=self.direction_var, values=ff.DIRECTIONS,
-                                     width=10, state="readonly")
-            direction.pack(side="left", padx=4)
-            direction.bind("<<ComboboxSelected>>", lambda e: self._options_changed())
-            ttk.Label(anim, text="WebP and animated PNG keep full colour; boomerang plays "
-                                 "forward then back.", style="Muted.TLabel").pack(side="left", padx=(10, 0))
-            self.result_btn = ttk.Button(anim, text="Preview result", command=self._toggle_result)
-            self.result_btn.pack(side="right")
+            self._build_options(main)
 
         self.canvas = tk.Canvas(main, width=VIEW_W, height=VIEW_H, bg="#111",
                                 highlightthickness=0, cursor="crosshair")
@@ -155,13 +151,78 @@ class ExportDialog(tk.Toplevel):
         self.save_btn.pack(side="right", padx=6)
         self._update_labels()
 
+    def _build_options(self, main):
+        """The animation options, two rows of them; the preview follows every change."""
+        rows = []
+        for _ in range(2):
+            row = ttk.Frame(main)
+            row.pack(fill="x", pady=(0, 6))
+            rows.append(row)
+        v = self.vars
+        fields = (
+            (0, "Format", "fmt", self.formats, 13, True,
+             "GIF works everywhere; WebP and animated PNG keep full colour and are often smaller"),
+            (0, "Direction", "direction", ff.DIRECTIONS, 10, True,
+             "Boomerang plays forward then back, so it loops smoothly"),
+            (0, "Speed", "speed", (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0), 5, False,
+             "2 plays twice as fast (and is half as long)"),
+            (1, "FPS", "fps", (5, 8, 10, 12, 15, 20, 24, 25, 30, 50), 4, False,
+             "Frames per second: more is smoother, fewer makes a smaller file"),
+            (1, "Width", "width", (0, 240, 320, 480, 640, 800, 1080), 5, False,
+             "Width in pixels (0 keeps the full size)"),
+            (1, "Colours", "colors", (256, 128, 64, 32, 16), 4, False,
+             "Colours in the palette (GIF only): fewer makes a smaller file"),
+        )
+        for r, label, name, values, width, readonly, tip in fields:
+            ttk.Label(rows[r], text=label).pack(side="left", padx=(0, 4))
+            box = ttk.Combobox(rows[r], textvariable=v[name], values=values, width=width,
+                               state="readonly" if readonly else "normal")
+            box.pack(side="left", padx=(0, 14))
+            Tooltip(box, tip)
+            if name == "colors":
+                self.colors_box = box
+        ttk.Checkbutton(rows[1], text="Loop forever", variable=v["loop"]).pack(side="left")
+        self.result_btn = ttk.Button(rows[0], text="Preview result", command=self._toggle_result)
+        self.result_btn.pack(side="right")
+        Tooltip(self.result_btn, "Make the real file and play it, with its exact colours "
+                                 "and file size (saving then just keeps it)")
+        for name, var in v.items():
+            var.trace_add("write", lambda *_: self._options_changed())
+        self.colors_box.config(state="normal" if self.fmt == "GIF" else "disabled")
+
+    def _read_options(self):
+        """The options typed in, or None if one isn't a sensible number."""
+        v = self.vars
+        try:
+            opts = {"fmt": v["fmt"].get(), "direction": v["direction"].get(),
+                    "fps": int(float(v["fps"].get())), "width": int(float(v["width"].get())),
+                    "speed": float(v["speed"].get()), "colors": int(float(v["colors"].get())),
+                    "loop": bool(v["loop"].get())}
+        except (ValueError, tk.TclError):
+            return None
+        ok = (1 <= opts["fps"] <= 50 and opts["width"] >= 0 and 0.1 <= opts["speed"] <= 10
+              and 2 <= opts["colors"] <= 256)
+        return opts if ok else None
+
     @property
     def fmt(self):
-        return self.fmt_var.get()
+        return self.opts["fmt"]
 
     @property
     def direction(self):
-        return self.direction_var.get()
+        return self.opts["direction"]
+
+    @property
+    def fps(self):
+        return self.opts["fps"]
+
+    @property
+    def speed(self):
+        return self.opts["speed"]
+
+    @property
+    def out_width(self):
+        return self.opts["width"]
 
     def _set_what(self):
         names = {"GIF": "GIF", "WebP": "WebP", "Animated PNG": "animated PNG"}
@@ -169,11 +230,28 @@ class ExportDialog(tk.Toplevel):
         self.title(f"Save {self.what}")
 
     def _options_changed(self):
-        """A different format or direction: the made preview no longer applies."""
+        """An animation option changed: update the live preview (once typing pauses)."""
+        opts = self._read_options()
+        if opts is None or opts == self.opts:
+            return
+        restart = any(opts[k] != self.opts[k] for k in ("direction", "fps", "width", "speed")) \
+            or (opts["fmt"] == "GIF") != (self.fmt == "GIF") \
+            or (opts["fmt"] == "GIF" and opts["colors"] != self.opts["colors"])
+        self.opts = opts
+        self.colors_box.config(state="normal" if self.fmt == "GIF" else "disabled")
         self._set_what()
         self._leave_result()
         self._update_labels()
         self._update_info()
+        if restart:
+            if self.live_job:
+                self.after_cancel(self.live_job)
+            self.live_job = self.after(LIVE_DELAY_MS, self._live_restart)
+
+    def _live_restart(self):
+        self.live_job = None
+        if not self.closed and not self.showing_result:
+            self._reload()
 
     def _sections(self):
         return self.choices[self.choice.get()][1]
@@ -271,7 +349,12 @@ class ExportDialog(tk.Toplevel):
         self.box = ((VIEW_W - dw) // 2, (VIEW_H - dh) // 2, dw, dh)
         self.canvas.coords(self.image_item, self.box[0], self.box[1])
         rot = ff.transform_filters(self.rotate, self.flip)
-        if self.mode in ("gif", "video"):
+        if self.mode == "gif":
+            start, end = self._sections()[self.section]
+            self.player.start(self.app.video_path, start, (dw, dh), self.fps,
+                              duration=end - start, pre_vf=rot, speed=self.speed,
+                              post_vf=self._live_filters(dw, dh))
+        elif self.mode == "video":
             start, end = self._sections()[self.section]
             self.player.muted = not self.app.sound.get()
             self.player.volume, self.player.boost = self.app.gain_settings()
@@ -288,6 +371,24 @@ class ExportDialog(tk.Toplevel):
 
             threading.Thread(target=work, daemon=True).start()
         self._draw_crop()
+
+    def _live_filters(self, dw, dh):
+        """Filters that make the preview look like the animation: its resolution,
+        direction and (for GIFs) limited colours. The crop is drawn on top instead."""
+        filters = []
+        rw, _ = self._rotated_size()
+        cw, _ = self._output_size()
+        # The whole frame at the animation's scale, if that's coarser than the view.
+        scaled = int(rw * self._animation_size()[0] / cw) // 2 * 2
+        if 2 <= scaled < dw:
+            filters.append(f"scale={scaled}:-2:flags=lanczos")
+        # At view size before reversing, which has to hold every frame in memory.
+        filters.append(f"scale={dw}:{dh}:flags=neighbor")
+        filters.append(ff.direction_filters(self.direction))
+        if self.fmt == "GIF":
+            filters.append(f"split[pa][pb];[pa]palettegen=max_colors={self.opts['colors']}:"
+                           "stats_mode=single[pp];[pb][pp]paletteuse=new=1:dither=sierra2_4a")
+        return ff.chain(*filters)
 
     def _show_still(self, token, data):
         if token == self.grab_token and data and not self.closed:
@@ -307,7 +408,7 @@ class ExportDialog(tk.Toplevel):
     # ---------------------------------------------------- result preview
     def _result_valid(self):
         return (self.result is not None and self.result[1:] == (
-            self.transform(), self.choice.get(), self.fmt, self.direction))
+            self.transform(), self.choice.get(), self.opts))
 
     def _toggle_result(self):
         if self.showing_result:
@@ -320,10 +421,11 @@ class ExportDialog(tk.Toplevel):
         # Make the real file in the background, then play it.
         self.render_token += 1
         token, transform, choice = self.render_token, self.transform(), self.choice.get()
-        fmt, direction = self.fmt, self.direction
+        opts = dict(self.opts)
         start, end = self._sections()[0]
-        dst = os.path.join(self.temp_dir, f"result{self.render_token}{ff.ANIMATION_FORMATS[fmt][0]}")
-        cmd = self.render(transform, start, end, dst, fmt, direction)
+        dst = os.path.join(self.temp_dir,
+                           f"result{self.render_token}{ff.ANIMATION_FORMATS[opts['fmt']][0]}")
+        cmd = self.render(transform, start, end, dst, opts)
         seconds = ff.animation_seconds(start, end, self.speed, self.direction)
         self.result_btn.config(text="Making preview...", state="disabled")
 
@@ -334,8 +436,7 @@ class ExportDialog(tk.Toplevel):
         def work():
             err = ff.run_with_progress(cmd, seconds, progress,
                                        lambda: self.closed or token != self.render_token)
-            self._from_thread(lambda: self._render_done(token, err, dst, (transform, choice, fmt,
-                                                                          direction)))
+            self._from_thread(lambda: self._render_done(token, err, dst, (transform, choice, opts)))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -455,7 +556,10 @@ class ExportDialog(tk.Toplevel):
                     f"({round(lengths[0] * self.fps)} frames)")
         if self.direction != "Forward":
             text += f", {self.direction.lower()}"
-        self.info.config(text=text)
+        over = self.max_seconds and max(lengths) > self.max_seconds
+        if over:
+            text += f"  \u2013 over the {self.max_seconds} s limit"
+        self.info.config(text=text, style="Error.TLabel" if over else "TLabel")
 
     def _hover(self, event):
         if self.drag or self.showing_result:
@@ -538,7 +642,11 @@ class ExportDialog(tk.Toplevel):
         rendered = None
         if self._result_valid() and not self._separate():
             rendered = self.result[0]
-        options = {"fmt": self.fmt, "direction": self.direction}
+        if self.mode == "gif" and self._read_options() is None:
+            messagebox.showerror("Check the options", "FPS must be 1-50, Width 0 or more, "
+                                 "Speed 0.1-10 and Colours 2-256.", parent=self)
+            return
+        options = dict(self.opts)
         self.close(remove_temp=False)
         try:
             self.on_save(transform, choice, rendered, options)  # copies `rendered` if it uses it
@@ -548,6 +656,8 @@ class ExportDialog(tk.Toplevel):
     def close(self, remove_temp=True):
         self.closed = True
         self.render_token += 1
+        if self.live_job:
+            self.after_cancel(self.live_job)
         self.player.close()
         self.grab_release()
         self.destroy()
