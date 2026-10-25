@@ -160,15 +160,16 @@ class GifMakerApp:
         it reopens the main window's video under its new name, with its sections.
         """
         key = os.path.normcase(os.path.abspath(folder))
+        return self._release(
+            lambda path: os.path.normcase(os.path.dirname(os.path.abspath(path))) == key)
 
-        def in_folder(path):
-            return path and os.path.normcase(os.path.dirname(os.path.abspath(path))) == key
-
+    def _release(self, matches):
+        """release_folder() for the open videos whose paths matches(path) picks."""
         if self.grid_window is not None:
             for tile in list(self.grid_window.tiles):
-                if in_folder(tile.path):
+                if tile.path and matches(tile.path):
                     self.grid_window.remove(tile)
-        if not in_folder(self.video_path):
+        if not self.video_path or not matches(self.video_path):
             return lambda mapping: None
         path, position = self.video_path, self.position.get()
         sections, start, end = list(self.sections), self.start_text.get(), self.end_text.get()
@@ -188,6 +189,69 @@ class GifMakerApp:
                 self._seek(position)
 
         return reopen
+
+    # ------------------------------------------------------------ rename
+    def start_rename(self):
+        """Edit the video's name in place of its label; Enter renames the file."""
+        if not self.video_path or self.rename_entry is not None:
+            return
+        stem = os.path.splitext(os.path.basename(self.video_path))[0]
+        entry = self.rename_entry = ttk.Entry(self.file_label.master)
+        entry.insert(0, stem)
+        entry.select_range(0, "end")
+        entry.place(in_=self.file_label, x=0, y=0, relwidth=1, relheight=1)
+        entry.focus_set()
+        entry.bind("<Return>", lambda e: self._finish_rename(True) or "break")
+        entry.bind("<Escape>", lambda e: self._finish_rename(False) or "break")
+        entry.bind("<FocusOut>", lambda e: self._finish_rename(True))
+
+    def _finish_rename(self, keep):
+        entry, self.rename_entry = self.rename_entry, None
+        if entry is None:
+            return
+        name = entry.get().strip().rstrip(".")
+        entry.destroy()
+        self.root.focus_set()
+        if not keep or not self.video_path:
+            return
+        folder = os.path.dirname(os.path.abspath(self.video_path))
+        old = os.path.basename(self.video_path)
+        stem, ext = os.path.splitext(old)
+        if not name or name == stem:
+            return
+        if any(c in files.INVALID_NAME_CHARS or ord(c) < 32 for c in name):
+            messagebox.showerror("Can't rename", "A file name can't contain any of these: "
+                                 + " ".join(files.INVALID_NAME_CHARS))
+            return
+        if self.busy:
+            self.status.set("Wait for the save to finish (or cancel it) before renaming.")
+            return
+        new = name + ext
+        if os.path.exists(os.path.join(folder, new)) and \
+                os.path.normcase(new) != os.path.normcase(old):
+            messagebox.showerror("Can't rename", f"\u201c{new}\u201d already exists in this folder.")
+            return
+        key = os.path.normcase(os.path.abspath(self.video_path))
+        reopen = self._release(lambda path: os.path.normcase(os.path.abspath(path)) == key)
+        self._rename_when_free(folder, old, new, reopen, tries=15)
+
+    def _rename_when_free(self, folder, old, new, reopen, tries):
+        # The players take a moment to let go of the file, and Windows won't rename
+        # a file that's still open, so retry for a couple of seconds.
+        try:
+            files.rename_all(folder, [(old, new)])
+        except OSError as e:
+            if tries > 0 and not isinstance(e, FileExistsError):
+                self.root.after(150, lambda: self._rename_when_free(folder, old, new, reopen,
+                                                                    tries - 1))
+                return
+            reopen({})  # open it again under its old name
+            messagebox.showerror("Couldn't rename", str(e))
+            return
+        reopen({os.path.normcase(os.path.join(folder, old)): os.path.join(folder, new)})
+        if self.rename_window is not None:
+            self.rename_window.reload()
+        self.status.set(f"Renamed to {new}")
 
     # ----------------------------------------------------------- updates
     def _check_for_update(self):
@@ -325,7 +389,10 @@ class GifMakerApp:
         # width=1: a long name is cut off rather than widening the window.
         self.file_label = ttk.Label(top, text="No video loaded", style="Muted.TLabel", width=1)
         self.file_label.pack(side="left", fill="x", expand=True, padx=(8, 8))
-        Tooltip(self.file_label, lambda: self.video_path or "No video loaded")
+        Tooltip(self.file_label, lambda: f"{self.video_path}\nDouble-click to rename it"
+                if self.video_path else "No video loaded")
+        self.file_label.bind("<Double-Button-1>", lambda e: self.start_rename())
+        self.rename_entry = None
 
         # The video, with back/next buttons for the other videos in its folder. It
         # takes whatever room the window has, and the picture is scaled to fit.
@@ -486,6 +553,7 @@ class GifMakerApp:
         self.root.bind("<Next>", lambda e: self._key_set(e, lambda: self.open_neighbour(1)))
         self.root.bind("<Delete>", lambda e: self._key_set(e, self.delete_file))
         self.root.bind("<Control-o>", lambda e: self.open_video())
+        self.root.bind("<F2>", lambda e: self.start_rename())
         self.root.bind("<F11>", self.toggle_fullscreen)
         self.root.bind("<Escape>", lambda e: self.fullscreen and self.toggle_fullscreen())
         self._update_nav()

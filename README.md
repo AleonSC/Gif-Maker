@@ -68,7 +68,8 @@ anything, and **Undo last rename** puts them back.
 **Dark** (top right) switches the whole app to dark colours, title bars included. It's
 remembered, and the first time it follows your Windows setting.
 
-**Close** closes the current video so you can start over, and **Show in folder after
+Double-click the video's name at the top (or press F2) to rename its file; Enter
+saves, Esc cancels, and your markers and sections stay put. **Close** closes the current video so you can start over, and **Show in folder after
 saving** opens Explorer on each file you save. Hover over any control for a hint.
 
 GIFs are made with ffmpeg's two-pass palette method, which gives much better colors than a
