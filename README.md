@@ -2,7 +2,7 @@
 
 A small Windows desktop app for turning a section of a video into a GIF.
 
-1. **Open video...** (mp4, mkv, mov, avi, webm, ...), drag a video from Explorer into the
+1. **Open...** (Ctrl+O; mp4, mkv, mov, avi, webm, ...), drag a video from Explorer into the
    window, or drop one onto `GifMaker.exe`.
 2. Press **Play** (or the spacebar) to watch it with sound (untick **Sound** to mute), or
    click and drag on the timeline / use the step buttons / ←→ arrow keys to find the part
@@ -10,11 +10,13 @@ A small Windows desktop app for turning a section of a video into a GIF.
    appears as soon as you stop.
 3. Set the clip by dragging the green (start) and red (end) markers on the timeline, with
    the **[** and **]** buttons on the play bar (or the `[` and `]` keys), which also work
-   while the video plays, or by typing times like `12.5` or `1:02.25`. **+ Section** on the
-   play bar keeps the current loop as a video section (see below).
+   while the video plays, or by typing times like `12.5` or `1:02.25` into **Start** and
+   **End** (Enter jumps there). **+ Section** on the play bar keeps the clip as a video
+   section (see below).
 4. Click **Play clip** to loop just that section. You can drag the markers while it loops
    to fine-tune it.
-5. Choose FPS, width, speed, color count and looping, then click **Make GIF...**.
+5. Choose FPS, width, speed, colours and looping on the **Animation** row, then click
+   **Make GIF...** (bottom right).
    Animations can be up to 30 seconds long (after the speed change; a boomerang counts twice).
 6. A preview window plays the GIF's frames on a loop. Pick the **Format** (GIF, WebP or
    animated PNG: the last two keep full colour and are often smaller) and **Direction**
@@ -24,18 +26,18 @@ A small Windows desktop app for turning a section of a video into a GIF.
    real file and plays it, with its true colours and file size; saving then just keeps it.
    If you've made sections, you can save each one as its own file instead.
 
-**Save snapshot...** saves the frame you're looking at as a full-resolution PNG or JPEG,
+**Snapshot...** saves the frame you're looking at as a full-resolution PNG or JPEG,
 with the same preview window for rotating and cropping first.
 
 **Save video...** saves the section between the markers as a new MP4 (with its sound),
 cut exactly at the markers, after the same rotate/crop preview. To keep several parts of
-a video, set the markers and click **Add section** for each part: the sections appear in
+a video, set the markers and click **+ Section** for each part: the sections appear in
 the orange strip under the timeline (click one to change it with the markers, then
-**Done editing**), and **Save video...** joins them in time order and cuts out the rest, or
+**✓ Done**), and **Save video...** joins them in time order and cuts out the rest, or
 saves each section as its own numbered video.
 
-The speed box and **Vol** slider next to the time set the playback speed (the sound keeps its
-pitch) and volume; **Boost** makes quiet videos up to 4x louder (very loud parts may distort). **Delete file...** (or the Delete key) deletes the open video, after
+The speed box, **Sound** switch and volume slider on the right of the play bar set the playback speed (the sound keeps its
+pitch) and volume; **Boost** makes quiet videos up to 4x louder (very loud parts may distort). **Delete...** (or the Delete key) deletes the open video, after
 asking, to the Recycle Bin, and opens the next one in the folder.
 
 The **‹** and **›** buttons beside the video (or Page Up / Page Down) open the previous or
@@ -59,11 +61,11 @@ slightly or renamed) are kept next to each other and marked A, B, C... so duplic
 easy to spot. What it reads is saved, so sorting the same folder again is instant. It shows the old and new names before changing
 anything, and **Undo last rename** puts them back.
 
-**Dark mode** (top right) switches the whole app to dark colours, title bars included. It's
+**Dark** (top right) switches the whole app to dark colours, title bars included. It's
 remembered, and the first time it follows your Windows setting.
 
-**Clear** closes the current video so you can start over, and **Show folder after
-saving** opens Explorer on each file you save.
+**Close** closes the current video so you can start over, and **Show in folder after
+saving** opens Explorer on each file you save. Hover over any control for a hint.
 
 GIFs are made with ffmpeg's two-pass palette method, which gives much better colors than a
 plain conversion. ffmpeg is bundled inside the exe, so there is nothing else to install.

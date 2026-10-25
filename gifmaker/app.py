@@ -204,36 +204,54 @@ class GifMakerApp:
         return self.player.playing
 
     # ---------------------------------------------------------------- UI
+    def _styles(self):
+        """Fonts for this window's own styles (redone when the theme changes)."""
+        style = ttk.Style(self.root)
+        base = font.nametofont("TkDefaultFont")
+        nav = base.copy()
+        nav.configure(size=20, weight="bold")
+        bold = base.copy()
+        bold.configure(weight="bold")
+        self._fonts = (nav, bold)  # Tk forgets fonts that Python stops referring to
+        style.configure("Nav.TButton", font=nav, padding=(2, 0))
+        style.configure("Head.TLabel", font=bold)
+
     def _build_ui(self):
-        pad = {"padx": 8, "pady": 4}
-        main = self.main = ttk.Frame(self.root, padding=10)
+        self._styles()
+        theme.on_change(self._styles)
+        main = self.main = ttk.Frame(self.root, padding=(10, 8, 10, 6))
         main.pack(fill="both", expand=True)
 
+        # Toolbar: the file on the left, the other tools on the right.
         top = ttk.Frame(main)
         top.pack(fill="x")
-        ttk.Button(top, text="Open video...", command=self.open_video).pack(side="left")
-        ttk.Button(top, text="Clear", command=self.clear_video).pack(side="left", padx=(6, 0))
-        delete = ttk.Button(top, text="Delete file...", command=self.delete_file)
-        delete.pack(side="left", padx=(6, 0))
-        Tooltip(delete, "Delete this video and open the next one in the folder  (Delete key)")
+        for text, command, tip in (
+                ("Open...", self.open_video, "Open a video  (Ctrl+O, or drag one onto the window)"),
+                ("Close", self.clear_video, "Close the video and start again"),
+                ("Delete...", self.delete_file,
+                 "Delete this video and open the next one in the folder  (Delete key)")):
+            button = ttk.Button(top, text=text, command=command)
+            button.pack(side="left", padx=(0, 4))
+            Tooltip(button, tip)
+        ttk.Checkbutton(top, text="Dark", variable=self.dark_mode,
+                        command=self._toggle_dark).pack(side="right")
+        ttk.Separator(top, orient="vertical").pack(side="right", fill="y", padx=10, pady=3)
         grid = ttk.Button(top, text="Grid player", command=self.open_grid)
         grid.pack(side="right")
+        Tooltip(grid, "Play several videos at once, each in a panel you can move, resize and loop")
         rename = ttk.Button(top, text="Rename files", command=self.open_rename_tool)
-        rename.pack(side="right", padx=(0, 6))
+        rename.pack(side="right", padx=(0, 4))
         Tooltip(rename, "Rename everything in a folder with a numbered pattern, "
                         "in name, date, size or colour order")
-        ttk.Checkbutton(top, text="Dark mode", variable=self.dark_mode,
-                        command=self._toggle_dark).pack(side="right", padx=(0, 12))
-        Tooltip(grid, "Play several videos at once, each in a panel you can move, resize and loop")
-        self.file_label = ttk.Label(top, text="No video loaded", style="Muted.TLabel")
-        self.file_label.pack(side="left", padx=10)
+        # width=1: a long name is cut off rather than widening the window.
+        self.file_label = ttk.Label(top, text="No video loaded", style="Muted.TLabel", width=1)
+        self.file_label.pack(side="left", fill="x", expand=True, padx=(8, 8))
+        Tooltip(self.file_label, lambda: self.video_path or "No video loaded")
 
+        # The video, with back/next buttons for the other videos in its folder.
         view = ttk.Frame(main)
-        view.pack(pady=8)
-        nav_font = font.nametofont("TkDefaultFont").copy()
-        nav_font.configure(size=20, weight="bold")
-        ttk.Style(self.root).configure("Nav.TButton", font=nav_font, padding=(2, 0))
-        self.back_btn = ttk.Button(view, text="\u2039", width=2, style="Nav.TButton",
+        view.pack(pady=(8, 4))
+        self.back_btn = ttk.Button(view, text="‹", width=2, style="Nav.TButton",
                                    command=lambda: self.open_neighbour(-1))
         self.back_btn.pack(side="left", fill="y", padx=(0, 4))
         Tooltip(self.back_btn, lambda: self._neighbour_tip(-1))
@@ -241,7 +259,7 @@ class GifMakerApp:
                                 bg="#111", highlightthickness=0)
         self.canvas.pack(side="left")
         self.canvas.bind("<Double-Button-1>", self.toggle_fullscreen)
-        self.next_btn = ttk.Button(view, text="\u203A", width=2, style="Nav.TButton",
+        self.next_btn = ttk.Button(view, text="›", width=2, style="Nav.TButton",
                                    command=lambda: self.open_neighbour(1))
         self.next_btn.pack(side="left", fill="y", padx=(4, 0))
         Tooltip(self.next_btn, lambda: self._neighbour_tip(1))
@@ -250,125 +268,149 @@ class GifMakerApp:
             text="Open a video, or drag and drop one here.")
         self.canvas_img = self.canvas.create_image(PREVIEW_W // 2, PREVIEW_H // 2)
 
+        # Timeline across the full width, with the time on the right.
         scrub = self.scrub_bar = ttk.Frame(main)
         scrub.pack(fill="x")
         self.timeline = Timeline(scrub, on_seek=self._on_drag, on_seek_end=self._settle,
                                  on_marker=self._on_marker, on_section=self._select_section)
         self.timeline.pack(side="left", fill="x", expand=True)
         self.position.trace_add("write", lambda *_: self.timeline.set_position(self.position.get()))
-        self.pos_label = ttk.Label(scrub, text="0:00.000", width=12, anchor="e")
-        self.pos_label.pack(side="left", padx=(8, 0))
-        speed = ttk.Combobox(scrub, textvariable=self.play_speed, width=6, state="readonly",
-                             values=[f"{v:g}\u00D7" for v in PLAY_SPEEDS])
-        speed.pack(side="left", padx=(10, 0))
-        speed.bind("<<ComboboxSelected>>", lambda e: self._restart_playback())
-        Tooltip(speed, "Playback speed (sound keeps its pitch)")
-        ttk.Label(scrub, text="Vol").pack(side="left", padx=(10, 2))
-        vol = ttk.Scale(scrub, from_=0, to=100, variable=self.volume, length=90,
-                        command=lambda v: self._volume_changed())
-        vol.pack(side="left")
-        Tooltip(vol, "Volume")
-        ttk.Label(scrub, text="Boost").pack(side="left", padx=(10, 2))
-        boost = ttk.Scale(scrub, from_=100, to=MAX_BOOST, variable=self.boost, length=70,
+        self.pos_label = ttk.Label(scrub, width=19, anchor="e")
+        self.pos_label.pack(side="left", padx=(6, 0), anchor="n", pady=(4, 0))
+        self._show_time(0)
+
+        # Controls: playing and stepping, marking, then sound and view on the right.
+        bar = self.play_bar = ttk.Frame(main)
+        bar.pack(fill="x", pady=(2, 0))
+        self.play_btn = ttk.Button(bar, text="▶ Play", width=9, command=self.toggle_play)
+        self.play_btn.pack(side="left")
+        Tooltip(self.play_btn, "Play or pause  (Space)")
+        self.clip_btn = ttk.Button(bar, text="↻ Play clip", width=11,
+                                   command=self.toggle_play_clip)
+        self.clip_btn.pack(side="left", padx=(2, 0))
+        Tooltip(self.clip_btn, "Play the clip between the markers over and over")
+        ttk.Frame(bar, width=10).pack(side="left")
+        for label, delta, tip in (("-1s", -1, "Back 1 second"),
+                                  ("-1f", "-f", "Back 1 frame  (←)"),
+                                  ("+1f", "+f", "Forward 1 frame  (→)"),
+                                  ("+1s", 1, "Forward 1 second")):
+            button = ttk.Button(bar, text=label, width=3, command=lambda d=delta: self.step(d))
+            button.pack(side="left", padx=(0, 1))
+            Tooltip(button, tip)
+        ttk.Frame(bar, width=10).pack(side="left")
+        # Quick marking while watching: clip start, clip end, and keep as a section.
+        for text, width, command, tip in (
+                ("[", 2, self.set_start, "Start the clip here (green marker)  ( [ key )"),
+                ("]", 2, self.set_end, "End the clip here (red marker)  ( ] key )")):
+            button = ttk.Button(bar, text=text, width=width, command=command)
+            button.pack(side="left", padx=(0, 1))
+            Tooltip(button, tip)
+        self.section_btn = ttk.Button(bar, text="+ Section", width=9, command=self._section_button)
+        self.section_btn.pack(side="left")
+        Tooltip(self.section_btn, "Keep the clip as a section of the video you save "
+                                  "(or finish changing the section you're editing)")
+        fs = ttk.Button(bar, text="⛶", width=3, command=self.toggle_fullscreen)
+        fs.pack(side="right", padx=(8, 0))
+        Tooltip(fs, "Fullscreen  (F11 or double-click the video; Esc to leave)")
+        self.boost_label = ttk.Label(bar, text="100%", width=5)
+        self.boost_label.pack(side="right")
+        boost = ttk.Scale(bar, from_=100, to=MAX_BOOST, variable=self.boost, length=60,
                           command=lambda v: self._volume_changed())
-        boost.pack(side="left")
-        self.boost_label = ttk.Label(scrub, text="100%", width=5)
-        self.boost_label.pack(side="left", padx=(2, 0))
+        boost.pack(side="right", padx=(2, 2))
         Tooltip(boost, f"Make quiet videos louder, up to {MAX_BOOST}%. "
                        "Loud parts may distort when boosted a lot.")
-
-        step = self.play_bar = ttk.Frame(main)
-        step.pack(pady=4)
-        self.play_btn = ttk.Button(step, text="\u25B6 Play", width=9, command=self.toggle_play)
-        self.play_btn.pack(side="left", padx=2)
-        self.clip_btn = ttk.Button(step, text="\u21BB Play clip", width=11,
-                                   command=self.toggle_play_clip)
-        self.clip_btn.pack(side="left", padx=2)
-        self.sound_check = ttk.Checkbutton(step, text="Sound", variable=self.sound,
+        ttk.Label(bar, text="Boost").pack(side="right", padx=(6, 0))
+        vol = ttk.Scale(bar, from_=0, to=100, variable=self.volume, length=70,
+                        command=lambda v: self._volume_changed())
+        vol.pack(side="right")
+        Tooltip(vol, "Volume")
+        self.sound_check = ttk.Checkbutton(bar, text="Sound", variable=self.sound,
                                            command=self._sound_toggled)
-        self.sound_check.pack(side="left", padx=(4, 10))
-        # Quick marking while watching: loop start, loop end, and keep as a section.
-        for text, width, command, tip in (
-                ("[", 3, self.set_start, "Set the loop start (green marker) to the playhead  ( [ key )"),
-                ("]", 3, self.set_end, "Set the loop end (red marker) to the playhead  ( ] key )"),
-                ("+ Section", 9, self._section_button,
-                 "Keep the loop as a video section (finishes editing if you're changing one)")):
-            button = ttk.Button(step, text=text, width=width, command=command)
-            button.pack(side="left", padx=1)
-            Tooltip(button, tip)
-        ttk.Frame(step, width=10).pack(side="left")
-        for label, delta in (("<< 1s", -1), ("< frame", "-f"), ("frame >", "+f"), ("1s >>", 1)):
-            ttk.Button(step, text=label, width=7,
-                       command=lambda d=delta: self.step(d)).pack(side="left", padx=1)
-        ttk.Button(step, text="Save snapshot...",
-                   command=self.save_snapshot).pack(side="left", padx=(12, 2))
-        fs = ttk.Button(step, text="\u26F6", width=3, command=self.toggle_fullscreen)
-        fs.pack(side="left", padx=(6, 0))
-        Tooltip(fs, "Fullscreen (F11 or double-click the video; Esc to leave)")
+        self.sound_check.pack(side="right", padx=(6, 4))
+        speed = ttk.Combobox(bar, textvariable=self.play_speed, width=5, state="readonly",
+                             values=[f"{v:g}×" for v in PLAY_SPEEDS])
+        speed.pack(side="right", padx=(8, 0))
+        speed.bind("<<ComboboxSelected>>", lambda e: self._restart_playback())
+        Tooltip(speed, "Playback speed (sound keeps its pitch)")
 
-        rng = ttk.LabelFrame(main, text="Clip range  (drag the green and red markers, "
-                                        "or type seconds or m:ss.sss)", padding=6)
-        rng.pack(fill="x", pady=6)
-        ttk.Label(rng, text="Start").grid(row=0, column=0, **pad)
-        ttk.Entry(rng, textvariable=self.start_text, width=12).grid(row=0, column=1, **pad)
-        ttk.Button(rng, text="Set to current", command=self.set_start).grid(row=0, column=2, **pad)
-        ttk.Button(rng, text="Go", width=4,
-                   command=lambda: self.goto(self.start_text)).grid(row=0, column=3, **pad)
-        ttk.Label(rng, text="End").grid(row=0, column=4, **pad)
-        ttk.Entry(rng, textvariable=self.end_text, width=12).grid(row=0, column=5, **pad)
-        ttk.Button(rng, text="Set to current", command=self.set_end).grid(row=0, column=6, **pad)
-        ttk.Button(rng, text="Go", width=4,
-                   command=lambda: self.goto(self.end_text)).grid(row=0, column=7, **pad)
-        self.length_label = ttk.Label(rng, text="GIF length: 0.00s")
-        self.length_label.grid(row=1, column=0, columnspan=9, sticky="w", **pad)
-        sec = ttk.Frame(rng)
-        sec.grid(row=2, column=0, columnspan=9, sticky="w", padx=8, pady=(2, 4))
-        self.section_btn = ttk.Button(sec, text="Add section", width=13,
-                                      command=self._section_button)
-        self.section_btn.pack(side="left")
-        self.remove_section_btn = ttk.Button(sec, text="Remove section",
-                                             command=self.remove_section, state="disabled")
-        self.remove_section_btn.pack(side="left", padx=4)
-        ttk.Button(sec, text="Clear sections", command=self.clear_sections).pack(side="left")
-        self.section_label = ttk.Label(sec, style="Muted.TLabel", wraplength=470, justify="left")
-        self.section_label.pack(side="left", padx=(10, 0))
+        # What to save (the clip, the sections) and how (the animation settings).
+        edit = ttk.Frame(main)
+        edit.pack(fill="x", pady=(10, 0))
+        edit.columnconfigure(1, weight=1)
+        rows = []
+        for r, heading in enumerate(("Clip", "Sections", "Animation")):
+            ttk.Label(edit, text=heading, style="Head.TLabel").grid(
+                row=r, column=0, sticky="w", padx=(0, 12), pady=3)
+            row = ttk.Frame(edit)
+            row.grid(row=r, column=1, sticky="ew", pady=3)
+            rows.append(row)
+        clip, sec, anim = rows
+
+        for text, var, tip in (
+                ("Start", self.start_text, "green marker; or press [ at the playhead"),
+                ("End", self.end_text, "red marker; or press ] at the playhead")):
+            ttk.Label(clip, text=text).pack(side="left", padx=(0, 4))
+            entry = ttk.Entry(clip, textvariable=var, width=10)
+            entry.pack(side="left", padx=(0, 12))
+            entry.bind("<Return>", lambda e, v=var: self.goto(v))
+            Tooltip(entry, f"Seconds or m:ss.sss (Enter jumps there). Or drag the {tip}.")
+        self.length_label = ttk.Label(clip)
+        self.length_label.pack(side="left")
         for var in (self.start_text, self.end_text, self.speed):
             var.trace_add("write", lambda *_: self._range_changed())
 
-        opts = ttk.LabelFrame(main, text="Animation options", padding=6)
-        opts.pack(fill="x", pady=6)
-        ttk.Label(opts, text="FPS").grid(row=0, column=0, **pad)
-        ttk.Spinbox(opts, from_=1, to=50, textvariable=self.fps, width=6).grid(row=0, column=1, **pad)
-        ttk.Label(opts, text="Width (px, 0 = original)").grid(row=0, column=2, **pad)
-        ttk.Combobox(opts, textvariable=self.width, width=7,
-                     values=(0, 240, 320, 480, 640, 800, 1080)).grid(row=0, column=3, **pad)
-        ttk.Label(opts, text="Speed").grid(row=0, column=4, **pad)
-        ttk.Combobox(opts, textvariable=self.speed, width=5,
-                     values=(0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0)).grid(row=0, column=5, **pad)
-        ttk.Label(opts, text="Colors").grid(row=0, column=6, **pad)
-        self.colors_box = ttk.Combobox(opts, textvariable=self.colors, width=5,
-                                       values=(256, 128, 64, 32, 16))
-        self.colors_box.grid(row=0, column=7, **pad)
-        ttk.Checkbutton(opts, text="Loop forever", variable=self.loop).grid(row=0, column=8, **pad)
-        Tooltip(self.colors_box, "Colours in the palette (GIF only)")
+        self.remove_section_btn = ttk.Button(sec, text="Remove", command=self.remove_section,
+                                             state="disabled")
+        self.remove_section_btn.pack(side="left")
+        Tooltip(self.remove_section_btn, "Remove the section you're editing")
+        self.clear_sections_btn = ttk.Button(sec, text="Clear all", command=self.clear_sections)
+        self.clear_sections_btn.pack(side="left", padx=(4, 10))
+        self.section_label = ttk.Label(sec, style="Muted.TLabel", width=1)
+        self.section_label.pack(side="left", fill="x", expand=True)
 
-        bottom = ttk.Frame(main)
-        bottom.pack(fill="x", pady=(8, 0))
-        self.make_btn = ttk.Button(bottom, text="Make GIF...", command=self.make_gif)
-        self.make_btn.pack(side="left")
-        self.video_btn = ttk.Button(bottom, text="Save video...",
-                                    command=self.save_clip_video)
-        self.video_btn.pack(side="left", padx=(6, 0))
-        self.cancel_btn = ttk.Button(bottom, text="Cancel", command=self.cancel, state="disabled")
-        self.cancel_btn.pack(side="left", padx=6)
-        ttk.Checkbutton(bottom, text="Show folder after saving",
-                        variable=self.show_folder).pack(side="right")
-        self.progress = ttk.Progressbar(bottom, maximum=1.0)
-        self.progress.pack(side="left", fill="x", expand=True, padx=6)
-        status = ttk.Label(main, textvariable=self.status)
-        status.pack(fill="x", pady=(6, 0))
-        # Hidden in fullscreen, which keeps just the video, timeline and play bar.
-        self._windowed_only = [top, rng, opts, bottom, status]
+        ttk.Label(anim, text="FPS").pack(side="left", padx=(0, 4))
+        ttk.Spinbox(anim, from_=1, to=50, textvariable=self.fps, width=4).pack(side="left", padx=(0, 12))
+        ttk.Label(anim, text="Width").pack(side="left", padx=(0, 4))
+        width = ttk.Combobox(anim, textvariable=self.width, width=5,
+                             values=(0, 240, 320, 480, 640, 800, 1080))
+        width.pack(side="left", padx=(0, 12))
+        Tooltip(width, "Width in pixels (0 keeps the video's own size)")
+        ttk.Label(anim, text="Speed").pack(side="left", padx=(0, 4))
+        speed = ttk.Combobox(anim, textvariable=self.speed, width=4,
+                             values=(0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0))
+        speed.pack(side="left", padx=(0, 12))
+        Tooltip(speed, "How fast the animation plays (2 = twice as fast, and half as long)")
+        ttk.Label(anim, text="Colours").pack(side="left", padx=(0, 4))
+        self.colors_box = ttk.Combobox(anim, textvariable=self.colors, width=4,
+                                       values=(256, 128, 64, 32, 16))
+        self.colors_box.pack(side="left", padx=(0, 12))
+        Tooltip(self.colors_box, "Colours in the palette (GIF only; fewer makes smaller files)")
+        ttk.Checkbutton(anim, text="Loop forever", variable=self.loop).pack(side="left")
+
+        # Saving: everything that writes a file, together at the bottom right.
+        actions = ttk.Frame(main)
+        actions.pack(fill="x", pady=(10, 0))
+        ttk.Checkbutton(actions, text="Show in folder after saving",
+                        variable=self.show_folder).pack(side="left")
+        self.make_btn = ttk.Button(actions, text="Make GIF...", command=self.make_gif)
+        self.make_btn.pack(side="right")
+        Tooltip(self.make_btn, "Make a GIF, WebP or animated PNG of the clip (or of each section)")
+        self.video_btn = ttk.Button(actions, text="Save video...", command=self.save_clip_video)
+        self.video_btn.pack(side="right", padx=4)
+        Tooltip(self.video_btn, "Save the sections (or just the clip) as a new video")
+        self.snap_btn = ttk.Button(actions, text="Snapshot...", command=self.save_snapshot)
+        self.snap_btn.pack(side="right")
+        Tooltip(self.snap_btn, "Save the frame you're looking at as a picture")
+
+        # Status line; the progress bar and Cancel only show while saving.
+        statusbar = ttk.Frame(main)
+        statusbar.pack(fill="x", pady=(8, 0))
+        self.cancel_btn = ttk.Button(statusbar, text="Cancel", command=self.cancel)
+        self.progress = ttk.Progressbar(statusbar, maximum=1.0, length=160)
+        ttk.Label(statusbar, textvariable=self.status, style="Muted.TLabel",
+                  width=1).pack(side="left", fill="x", expand=True)
+        # Hidden in fullscreen, which keeps just the video, timeline and controls.
+        self._windowed_only = [top, edit, actions, statusbar]
         self._rows = [(w, w.pack_info()) for w in main.pack_slaves()]
 
         self.root.bind("<space>", lambda e: self._key_set(e, self.toggle_play))
@@ -379,9 +421,13 @@ class GifMakerApp:
         self.root.bind("<Prior>", lambda e: self._key_set(e, lambda: self.open_neighbour(-1)))
         self.root.bind("<Next>", lambda e: self._key_set(e, lambda: self.open_neighbour(1)))
         self.root.bind("<Delete>", lambda e: self._key_set(e, self.delete_file))
+        self.root.bind("<Control-o>", lambda e: self.open_video())
         self.root.bind("<F11>", self.toggle_fullscreen)
         self.root.bind("<Escape>", lambda e: self.fullscreen and self.toggle_fullscreen())
         self._update_nav()
+
+    def _show_time(self, t):
+        self.pos_label.config(text=f"{ff.format_time(t)} / {ff.format_time(self.duration)}")
 
     # ------------------------------------------------------ drag & drop
     def _enable_drop(self):
@@ -447,9 +493,11 @@ class GifMakerApp:
         self.sound_check.config(state="normal" if info.has_audio else "disabled")
         self.transform = dict(NO_TRANSFORM)
         self.clear_sections()
-        sound = "" if info.has_audio else ", no sound"
-        self.file_label.config(text=f"{os.path.basename(path)}   ({ff.format_time(duration)}, "
-                                    f"{w}x{h}, {self.video_fps:g} fps{sound})", style="TLabel")
+        details = [ff.format_time(duration), f"{w}\u00D7{h}", f"{self.video_fps:g} fps"]
+        if not info.has_audio:
+            details.append("no sound")
+        self.file_label.config(text=f"{os.path.basename(path)}    " + "  \u00B7  ".join(details),
+                               style="TLabel")
         self.timeline.set_duration(duration)
         self.video_token += 1
         self.shown_t = None
@@ -458,7 +506,8 @@ class GifMakerApp:
         self.end_text.set(ff.format_time(min(duration, 3.0)))
         if w and w < self.width.get():
             self.width.set(0)
-        self.status.set("Scrub to the part you want, set Start and End, then click Make GIF.")
+        self.status.set("Mark the part you want with [ and ] (or drag the green and red "
+                        "markers), then Make GIF or Save video.")
         self._update_nav()
         self._seek(0.0)
 
@@ -604,11 +653,10 @@ class GifMakerApp:
         self.file_label.config(text="No video loaded", style="Muted.TLabel")
         self.sound_check.config(state="normal")
         self.position.set(0.0)
-        self.pos_label.config(text=ff.format_time(0))
+        self._show_time(0)
         self.start_text.set(ff.format_time(0))
         self.end_text.set(ff.format_time(0))
         self.timeline.set_duration(0)
-        self.progress.config(value=0)
         self._update_nav()
         self.status.set("Open a video to get started.")
 
@@ -674,7 +722,7 @@ class GifMakerApp:
             return
         self.stop_playback()
         self.position.set(t)
-        self.pos_label.config(text=ff.format_time(t))
+        self._show_time(t)
         if not self._show_thumb(t):
             self._request_frame(t, exact=False)
         if self.settle_job:
@@ -692,7 +740,7 @@ class GifMakerApp:
         self.stop_playback()
         t = min(self.duration, max(0.0, t))
         self.position.set(t)
-        self.pos_label.config(text=ff.format_time(t))
+        self._show_time(t)
         self._settle()
 
     def _show_thumb(self, t):
@@ -814,7 +862,7 @@ class GifMakerApp:
         except tk.TclError:
             pass
         self.position.set(min(t, self.duration))
-        self.pos_label.config(text=ff.format_time(t))
+        self._show_time(t)
 
     def _on_play_end(self):
         self._playback_stopped()
@@ -977,18 +1025,20 @@ class GifMakerApp:
     def _sections_changed(self):
         self.timeline.set_sections(self.sections, self.section_sel)
         n = len(self.sections)
-        self.section_btn.config(text="Done editing" if self.section_sel is not None else "Add section")
-        self.remove_section_btn.config(state="normal" if self.section_sel is not None else "disabled")
+        editing = self.section_sel is not None
+        self.section_btn.config(text="\u2713 Done" if editing else "+ Section")
+        self.remove_section_btn.config(state="normal" if editing else "disabled")
+        self.clear_sections_btn.config(state="normal" if n else "disabled")
         if not n:
-            text = ("To keep several parts of the video: set the markers, click Add section, "
-                    "repeat. Save video then cuts out everything else.")
-        elif self.section_sel is not None:
-            text = (f"Editing section {self.section_sel + 1} of {n}: the markers now move it. "
-                    "Click Done editing when it's right.")
+            text = ("None. To keep several parts in one video, mark each and click + Section; "
+                    "Save video cuts out the rest.")
+        elif editing:
+            text = (f"Editing {self.section_sel + 1} of {n}: the markers move it. "
+                    "Click \u2713 Done when it's right.")
         else:
             total = sum(e - s for s, e in ff.merge_sections(self.sections))
-            text = (f"{n} section{'s' if n > 1 else ''}, {total:.2f} s in total: Save video keeps "
-                    "only these. Click one in the strip under the timeline to change it.")
+            text = (f"{n} section{'s' if n > 1 else ''}, {total:.2f} s in all. "
+                    "Click one under the timeline to change it.")
         self.section_label.config(text=text)
 
     def _on_marker(self, which, t, final):
@@ -1020,21 +1070,21 @@ class GifMakerApp:
             if speed <= 0:
                 raise ValueError
         except (ValueError, tk.TclError):
-            self.length_label.config(text="Animation length: ?", style="TLabel")
+            self.length_label.config(text="Length: ?", style="TLabel")
             return
         direction = self.direction.get()
         length = ff.animation_seconds(start, end, speed, direction)
-        text = f"Animation length: {length:.2f}s  (max {MAX_GIF_SECONDS}s)"
+        text = f"Length {max(0.0, end - start):.2f} s"
         notes = []
         if speed != 1.0:
-            notes.append(f"{speed:g}x speed")
+            notes.append(f"{speed:g}\u00D7 speed")
         if direction == "Boomerang":
-            notes.append("there and back")
+            notes.append("boomerang")
         if notes:
-            text = f"Clip {end - start:.2f}s, {', '.join(notes)} \u2192 " + text
+            text += f"  \u2192  animation {length:.2f} s ({', '.join(notes)})"
         over = length > MAX_GIF_SECONDS
         if over:
-            text += "  \u2013 too long, shorten the clip or raise the speed"
+            text += f"  \u2013 over the {MAX_GIF_SECONDS} s animation limit"
         self.length_label.config(text=text, style="Error.TLabel" if over else "TLabel")
 
     # -------------------------------------------------------------- make
@@ -1252,10 +1302,15 @@ class GifMakerApp:
     def _set_busy(self, busy):
         self.busy = busy
         self.cancel_requested = False
-        self.make_btn.config(state="disabled" if busy else "normal")
-        self.video_btn.config(state="disabled" if busy else "normal")
-        self.cancel_btn.config(state="normal" if busy else "disabled")
+        for button in (self.make_btn, self.video_btn, self.snap_btn):
+            button.config(state="disabled" if busy else "normal")
         self.progress.config(value=0)
+        if busy:
+            self.cancel_btn.pack(side="right")
+            self.progress.pack(side="right", padx=6)
+        else:
+            self.cancel_btn.pack_forget()
+            self.progress.pack_forget()
 
     def _done(self, err, saved, what):
         """Report how a save went; `saved` lists the files that were finished."""
@@ -1267,7 +1322,6 @@ class GifMakerApp:
             self.status.set("Failed.")
             messagebox.showerror(f"{what} failed", err[-1500:])
             return
-        self.progress.config(value=1.0)
         size_mb = sum(os.path.getsize(p) for p in saved) / (1024 * 1024)
         if len(saved) == 1:
             self.status.set(f"Saved {saved[0]}  ({size_mb:.2f} MB)")
