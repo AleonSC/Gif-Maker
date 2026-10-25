@@ -106,6 +106,36 @@ jobs:
           if (Test-Path 'HKCU:\Software\Classes\GifMaker.Video') { throw "uninstall left the file type behind" }
           "uninstalled cleanly"
 
+      - name: Test updating from inside the app
+        shell: pwsh
+        run: |
+          # Install this version, start it, and have it update itself (exactly as the
+          # Update button does, minus the download) to an installer marked as newer.
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc /Q "/DAppVersion=$env:VERSION.1" "/FGifMaker-Setup-next" installer\GifMaker.iss
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $p = Start-Process dist\GifMaker-Setup.exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NOLAUNCH' -Wait -PassThru
+          if ($p.ExitCode) { throw "install failed: $($p.ExitCode)" }
+          $app = "$env:LOCALAPPDATA\Programs\GifMaker"
+          $env:GIFMAKER_TEST_UPDATE = "$PWD\dist\GifMaker-Setup-next.exe"
+          Start-Process "$app\GifMaker.exe"
+          Remove-Item Env:GIFMAKER_TEST_UPDATE
+          $want = "version=$env:VERSION.1"
+          for ($i = 0; $i -lt 120; $i++) {
+            Start-Sleep 1
+            if ((Get-Content "$app\install.ini" -Raw) -match [regex]::Escape($want)) { break }
+          }
+          Get-Content "$app\install.ini"
+          $log = "$env:LOCALAPPDATA\GifMaker\update.log"
+          if (Test-Path $log) { Get-Content $log | Select-Object -Last 25 }
+          if (-not ((Get-Content "$app\install.ini" -Raw) -match [regex]::Escape($want))) { throw "the update didn't install" }
+          for ($i = 0; $i -lt 20 -and -not (Get-Process GifMaker -ErrorAction SilentlyContinue); $i++) { Start-Sleep 1 }
+          if (-not (Get-Process GifMaker -ErrorAction SilentlyContinue)) { throw "GifMaker didn't start again after the update" }
+          "updated and restarted"
+          Get-Process GifMaker | Stop-Process -Force
+          Start-Sleep 2
+          Start-Process "$app\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES' -Wait
+
       - uses: actions/upload-artifact@v4
         with:
           name: GifMaker-Setup

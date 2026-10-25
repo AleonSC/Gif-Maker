@@ -132,6 +132,24 @@ Filename: "ms-settings:defaultapps?registeredAppUser=GifMaker"; Description: "Ma
 Filename: "{app}\GifMaker.exe"; Flags: nowait; Check: ShouldRelaunch
 
 [Code]
+// Wait (up to a minute) for GifMaker to finish closing: an update from inside the
+// app starts this installer and then quits, and Windows won't let files that are
+// still in use be replaced.
+function InitializeSetup: Boolean;
+var
+  Waited: Integer;
+begin
+  Waited := 0;
+  while CheckForMutexes('GifMakerAppRunning') and (Waited < 60000) do
+  begin
+    Sleep(250);
+    Waited := Waited + 250;
+  end;
+  if Waited > 0 then
+    Log(Format('Waited %d ms for GifMaker to close.', [Waited]));
+  Result := True;
+end;
+
 // After a silent update, start the app again (unless /NOLAUNCH, used by the build test).
 function ShouldRelaunch: Boolean;
 begin

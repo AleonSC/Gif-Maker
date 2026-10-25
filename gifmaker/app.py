@@ -131,8 +131,13 @@ class GifMakerApp:
         except OSError:
             self.listener = None
         self.new_release = None  # a newer release, once found
+        self.running_mutex = updater.mark_running()
+        self._report_last_update()
         if updater.can_update():
             threading.Thread(target=self._check_for_update, daemon=True).start()
+        test_setup = os.environ.get("GIFMAKER_TEST_UPDATE")
+        if test_setup:  # the build's update test: install this setup as if clicked
+            root.after(3000, lambda: self._run_installer(test_setup, "test"))
 
     def _setting_var(self, name, default):
         """A BooleanVar that's remembered between runs."""
@@ -313,13 +318,36 @@ class GifMakerApp:
         self.update_btn.config(state="normal")
         self.status.set(f"Couldn't download the update: {error}")
 
-    def _run_installer(self, path):
+    def _run_installer(self, path, version=None):
+        version = version or (self.new_release or {}).get("version", "")
+        theme.save_setting("pending_update", {"from": __version__, "to": version})
         try:
             updater.install(path)
         except OSError as e:
+            theme.save_setting("pending_update", None)
             self._update_failed(e)
             return
         self.close()
+
+    def _report_last_update(self):
+        """Say how the update started last time went (it runs while the app is closed)."""
+        pending = theme.load_setting("pending_update", None)
+        if not isinstance(pending, dict):
+            return
+        theme.save_setting("pending_update", None)
+        if __version__ != pending.get("from"):
+            self.status.set(f"Updated to {__version__}.")
+            return
+        detail = ""
+        try:
+            with open(updater.log_path(), encoding="utf-8", errors="replace") as f:
+                lines = [l.strip() for l in f if l.strip()]
+            errors = [l for l in lines if "error" in l.lower() or "abort" in l.lower()]
+            detail = (errors or lines or [""])[-1].split(" ", 2)[-1].strip()[:160]
+        except OSError:
+            pass
+        self.status.set(f"The update to {pending.get('to') or 'the new version'} didn't install"
+                        + (f" ({detail})" if detail else "") + ". Click Update to try again.")
 
     def _handed_over(self, path):
         """Another copy of GifMaker passed us a video: come to the front and open it."""

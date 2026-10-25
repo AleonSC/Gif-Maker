@@ -87,13 +87,39 @@ def download(update, on_progress=None, should_cancel=None):
     return path
 
 
+RUNNING_MUTEX = "GifMakerAppRunning"  # the installer waits until no GifMaker holds this
+
+
+def log_path():
+    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    return os.path.join(base, "GifMaker", "update.log")
+
+
+def mark_running():
+    """Hold a named mutex while the app runs, so the installer can wait for it to exit
+    (Windows won't let it replace files that are still in use). Keep the result."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        return ctypes.windll.kernel32.CreateMutexW(None, False, RUNNING_MUTEX)
+    except (AttributeError, OSError):
+        return None
+
+
 def install(path):
     """Start the installer silently; the caller should then quit straight away.
 
-    The installer waits for the app to close, replaces it, and starts it again.
+    The installer waits for every GifMaker to close, replaces the files, and
+    starts the app again. It logs to log_path().
     """
     flags = 0
     if sys.platform == "win32":
         flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    os.makedirs(os.path.dirname(log_path()), exist_ok=True)
+    env = dict(os.environ)
+    env.pop("GIFMAKER_TEST_UPDATE", None)  # the restarted app mustn't update again
     subprocess.Popen([path, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
-                      "/CLOSEAPPLICATIONS"], creationflags=flags, close_fds=True)
+                      "/CLOSEAPPLICATIONS", f"/LOG={log_path()}"],
+                     creationflags=flags, close_fds=True, env=env)
