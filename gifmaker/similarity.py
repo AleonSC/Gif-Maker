@@ -24,7 +24,10 @@ SAME_LENGTH = 0.03  # videos must be within 3% (or 1 s) of each other's length
 NEUTRAL_CHROMA = 0.035  # a main colour less colourful than this is a grey
 PALETTE = 4  # colours found in each picture
 VIVID = 0.12  # chroma at which a colour counts as fully vivid when picking the main colour
-VERSION = 3  # bump when the fingerprint changes, so old saved ones are ignored
+COLOR_CHROMA = 0.04  # a pixel at least this colourful (OKLab chroma) counts as coloured
+VISIBLE = 0.3  # pixels darker than this (OKLab lightness) are dark background, not the subject
+COLORFUL = 0.06  # a picture needs this share of coloured pixels to count as in colour
+VERSION = 4  # bump when the fingerprint changes, so old saved ones are ignored
 
 
 # ------------------------------------------------------------- colour
@@ -116,13 +119,28 @@ def palette(samples, k=PALETTE, rounds=8):
     return sorted(((s, c) for s, c in zip(shares, centres) if s > 0), reverse=True)
 
 
-def main_color(colors):
-    """The colour a person would call "the colour of this picture": mostly the biggest
-    area, but vivid colours count for more than greys, black or white."""
-    def score(entry):
-        share, (L, a, b) = entry
-        return share * (0.35 + min(math.hypot(a, b) / VIVID, 1.5))
-    return max(colors, key=score)[1]
+def tone(samples):
+    """(colourful, colour) of a picture's weighted (weight, colour) samples.
+
+    colourful is the share of the visible (not black) picture that's actually in
+    colour, so a coloured figure on a black background counts fully, while a black
+    and white picture with a tiny coloured detail doesn't. colour is the average of
+    the coloured parts (weighted by how vivid they are) for a colour picture, or
+    the average grey for a black and white one.
+    """
+    visible = [(w, c) for w, c in samples if c[0] > VISIBLE]
+    total = sum(w for w, _ in samples)
+    base = visible if sum(w for w, _ in visible) > 0.02 * total else samples
+    base_total = sum(w for w, _ in base) or 1.0
+    colored = [(w * math.hypot(c[1], c[2]), w, c) for w, c in base
+               if math.hypot(c[1], c[2]) >= COLOR_CHROMA]
+    colorful = sum(w for _, w, _ in colored) / base_total
+    if colorful >= COLORFUL:
+        weight = sum(v for v, _, _ in colored)
+        color = tuple(sum(v * c[i] for v, _, c in colored) / weight for i in range(3))
+    else:
+        color = tuple(sum(w * c[i] for w, c in base) / base_total for i in range(3))
+    return colorful, color
 
 
 def fingerprint(ffmpeg, path):
@@ -146,10 +164,12 @@ def fingerprint(ffmpeg, path):
     if not frames:
         return None
     mean = tuple(sum(f[2][i] for f in frames) / len(frames) for i in range(3))
-    colors = palette([s for f in frames for s in f[3]])
+    samples = [s for f in frames for s in f[3]]
+    colors = palette(samples)
+    colorful, main = tone(samples)
     return {"duration": duration, "frames": [f[:3] for f in frames], "mean": mean,
             "palette": [(share, color) for share, color in colors],
-            "main": main_color(colors)}
+            "main": main, "colorful": colorful}
 
 
 def swatch_rgb(sig):
@@ -196,12 +216,13 @@ def look_alike(s1, s2):
     return matches >= max(1, len(pairs) - 1)  # all but one frame (e.g. a different intro)
 
 
-def color_key(main):
-    """Groups main colours by hue (reds, oranges, yellows, greens, blues, purples), then
-    greys, black and white. Lightness runs dark to light in one hue group and light to
-    dark in the next, so neighbouring groups meet at similar shades (no jumps)."""
+def color_key(main, colorful=1.0):
+    """Groups colour pictures by hue (reds, oranges, yellows, greens, blues, purples),
+    then the black and white ones dark to light. Within a hue group lightness runs dark
+    to light, and the other way in the next, so neighbouring groups meet at similar
+    shades (no jumps). colorful is tone()'s share of the picture that's in colour."""
     L, a, b = main
-    if math.hypot(a, b) < NEUTRAL_CHROMA or L < 0.15:
+    if colorful < COLORFUL or math.hypot(a, b) < NEUTRAL_CHROMA:
         return (1, 0, L)
     hue = (math.degrees(math.atan2(b, a)) + 360 - 15) % 360  # start just before red
     group = int(hue // 30)
@@ -238,7 +259,8 @@ def order(names, sigs, keep_together=True):
 
     def group_key(members):
         return color_key(tuple(sum(sigs[n]["main"][i] for n in members) / len(members)
-                               for i in range(3)))
+                               for i in range(3)),
+                         sum(sigs[n].get("colorful", 1.0) for n in members) / len(members))
 
     ordered, labels = [], {}
     for members in sorted(groups.values(), key=group_key):
