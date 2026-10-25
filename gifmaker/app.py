@@ -105,6 +105,7 @@ class GifMakerApp:
         self.show_folder = self._setting_var("show_folder", False)
         self.autoplay = self._setting_var("autoplay", False)
         self.one_window = self._setting_var("one_window", True)
+        self.loop_video = self._setting_var("loop_video", False)
         self.dark_mode = tk.BooleanVar(value=theme.dark)
         self.sound = tk.BooleanVar(value=True)
         self.play_speed = tk.StringVar(value="1\u00D7")
@@ -437,6 +438,9 @@ class GifMakerApp:
                                    command=self.toggle_play_clip)
         self.clip_btn.pack(side="left", padx=(2, 0))
         Tooltip(self.clip_btn, "Play the clip between the markers over and over")
+        loop = ttk.Checkbutton(bar, text="Loop", variable=self.loop_video)
+        loop.pack(side="left", padx=(6, 0))
+        Tooltip(loop, "Play starts the video again from the beginning when it reaches the end")
         ttk.Frame(bar, width=8).pack(side="left")
         for label, delta, tip in (("-1s", -1, "Back 1 second"),
                                   ("-1f", "-f", "Back 1 frame  (←)"),
@@ -1007,6 +1011,8 @@ class GifMakerApp:
         self._playback_stopped()
         if self.play_clip:
             self.toggle_play_clip()  # go round the loop again
+        elif self.loop_video.get() and self.video_path:
+            self._start_playback(0.0, None, clip=False)  # the whole video, from the top
         else:
             self._settle()
 

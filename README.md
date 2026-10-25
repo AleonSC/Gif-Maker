@@ -4,7 +4,8 @@ A small Windows desktop app for turning a section of a video into a GIF.
 
 1. **Open...** (Ctrl+O; mp4, mkv, mov, avi, webm, ...), drag a video from Explorer into the
    window, or drop one onto `GifMaker.exe`.
-2. Press **Play** (or the spacebar) to watch it with sound (untick **Sound** to mute), or
+2. Press **Play** (or the spacebar) to watch it with sound (untick **Sound** to mute; tick
+   **Loop** to have it start over at the end), or
    click and drag on the timeline / use the step buttons / ←→ arrow keys to find the part
    you want. While you drag, the preview shows quick keyframe thumbnails; the exact frame
    appears as soon as you stop.
