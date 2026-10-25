@@ -28,6 +28,14 @@ A small Windows desktop app for turning a section of a video into a GIF.
    real file and plays it, with its true colours and file size; saving then just keeps it.
    If you've made sections, you can save each one as its own file instead.
 
+**Open link...** (Ctrl+L) downloads a video from YouTube or most other video sites and
+opens it, ready to clip: paste the page's link, pick the quality and the folder, and click
+**Download and open**. You can also copy a link and press Ctrl+V in the window, or drag a
+link from the browser onto it. It uses [yt-dlp](https://github.com/yt-dlp/yt-dlp), which
+GifMaker fetches the first time (about 18 MB) and keeps up to date by itself, since sites
+change often. Copy-protected videos (DRM) and ones that need you to sign in can't be
+downloaded.
+
 **Snapshot...** saves the frame you're looking at as a full-resolution PNG or JPEG,
 with the same preview window for rotating and cropping first.
 

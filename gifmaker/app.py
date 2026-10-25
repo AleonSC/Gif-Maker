@@ -14,12 +14,14 @@ from operator import itemgetter
 from tkinter import filedialog, font, messagebox, ttk
 
 from . import ffmpeg_tools as ff
+from . import downloader
 from . import files
 from . import single_instance
 from . import theme
 from . import updater
 from .export_dialog import ANIMATION_DEFAULTS, ExportDialog
 from .grid_player import GridPlayer
+from .link_dialog import LinkDialog
 from .rename_tool import RenameTool
 from .player import Player
 from .timeline import Timeline
@@ -27,7 +29,7 @@ from .tooltip import Tooltip
 from .version import __version__
 
 try:  # Drag and drop from Explorer needs the tkdnd extension; run without it if missing.
-    from tkinterdnd2 import COPY, DND_FILES, TkinterDnD
+    from tkinterdnd2 import COPY, DND_FILES, DND_TEXT, TkinterDnD
 except ImportError:
     TkinterDnD = None
 
@@ -294,7 +296,7 @@ class GifMakerApp:
             try:
                 path = updater.download(found, progress)
             except OSError as e:
-                self.root.after(0, lambda: self._update_failed(e))
+                self.root.after(0, lambda e=e: self._update_failed(e))
                 return
             self.root.after(0, lambda: self._run_installer(path))
 
@@ -363,6 +365,9 @@ class GifMakerApp:
         top = ttk.Frame(main)
         for text, command, tip in (
                 ("Open...", self.open_video, "Open a video  (Ctrl+O, or drag one onto the window)"),
+                ("Open link...", self.open_link,
+                 "Download a video from YouTube or another site and open it  (Ctrl+L, or paste "
+                 "or drag a link onto the window)"),
                 ("Close", self.clear_video, "Close the video and start again"),
                 ("Delete...", self.delete_file,
                  "Delete this video and open the next one in the folder  (Delete key)")):
@@ -557,6 +562,8 @@ class GifMakerApp:
         self.root.bind("<Next>", lambda e: self._key_set(e, lambda: self.open_neighbour(1)))
         self.root.bind("<Delete>", lambda e: self._key_set(e, self.delete_file))
         self.root.bind("<Control-o>", lambda e: self.open_video())
+        self.root.bind("<Control-l>", lambda e: self.open_link())
+        self.root.bind("<Control-v>", self._paste_link)
         self.root.bind("<F2>", lambda e: self.start_rename())
         self.root.bind("<F11>", self.toggle_fullscreen)
         self.root.bind("<Escape>", lambda e: self.fullscreen and self.toggle_fullscreen())
@@ -577,7 +584,7 @@ class GifMakerApp:
             return
 
         def register(widget):
-            widget.drop_target_register(DND_FILES)
+            widget.drop_target_register(DND_FILES, DND_TEXT)
             widget.dnd_bind("<<DropEnter>>", self._on_drop_enter)
             widget.dnd_bind("<<DropLeave>>", self._on_drop_leave)
             widget.dnd_bind("<<Drop>>", self._on_drop)
@@ -599,6 +606,10 @@ class GifMakerApp:
 
     def _on_drop(self, event):
         self.canvas.config(highlightthickness=0)
+        text = (event.data or "").strip()
+        if downloader.looks_like_link(text):  # a link dragged from a browser
+            self.root.after(10, lambda: self.open_link(text.split()[0]))
+            return COPY
         files = [f for f in self.root.tk.splitlist(event.data) if os.path.isfile(f)]
         if not files:
             return event.action
@@ -608,6 +619,38 @@ class GifMakerApp:
             # Open after the drop completes so Explorer isn't left waiting on dialogs.
             self.root.after(10, lambda: self.open_video(files[0]))
         return COPY
+
+    # ------------------------------------------------------------- links
+    def open_link(self, url=""):
+        """Download a video from a site (with yt-dlp) and open it."""
+        if self.busy:
+            self.status.set("Wait for the save to finish (or cancel it) first.")
+            return
+        existing = [w for w in self.root.winfo_children() if isinstance(w, LinkDialog)]
+        if existing:
+            existing[0].lift()
+            if url and not existing[0].busy:
+                existing[0].url.set(url)
+            return
+        if self.fullscreen:
+            self.toggle_fullscreen()
+        LinkDialog(self, url, on_done=self._downloaded)
+
+    def _downloaded(self, path):
+        self.open_video(path)
+        if self.video_path == path:
+            self.status.set(f"Downloaded to {path}")
+
+    def _paste_link(self, event):
+        """Ctrl+V with a link copied (and not typing in a box): download it."""
+        if isinstance(event.widget, (ttk.Entry, tk.Entry, ttk.Combobox, ttk.Spinbox)):
+            return
+        try:
+            text = self.root.clipboard_get().strip()
+        except tk.TclError:
+            return
+        if downloader.looks_like_link(text):
+            self.open_link(text)
 
     # ----------------------------------------------------------- loading
     def open_video(self, path=None):

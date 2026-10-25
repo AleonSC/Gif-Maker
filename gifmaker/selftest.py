@@ -153,6 +153,39 @@ def run(report_path):
         finally:
             root.destroy()
 
+    def link_download():
+        # yt-dlp fetched as on first use, then a download from a local web link,
+        # joined with the bundled ffmpeg (real sites can't be relied on in a build).
+        import functools
+        import http.server
+        import threading
+        from . import downloader
+
+        class Quiet(http.server.SimpleHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def handle(self):
+                try:
+                    super().handle()
+                except ConnectionError:
+                    pass
+
+        cmd = downloader.find_ytdlp() or downloader.fetch_ytdlp()
+        version = subprocess.run(cmd + ["--version"], capture_output=True, text=True,
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        server = http.server.ThreadingHTTPServer(
+            ("127.0.0.1", 0), functools.partial(Quiet, directory=os.path.dirname(src)))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            folder = os.path.join(os.path.dirname(src), "downloads")
+            os.makedirs(folder)
+            url = f"http://127.0.0.1:{server.server_port}/in.mp4"
+            path = downloader.run(downloader.build_command(cmd, url, folder, "720p", exe))
+        finally:
+            server.shutdown()
+        return f"yt-dlp {version.stdout.strip()}, downloaded {os.path.getsize(path)} bytes"
+
     check("ffmpeg", ffmpeg)
     check("source video", source)
     check("gif", gif)
@@ -165,6 +198,7 @@ def run(report_path):
     check("sound", sound)
     check("drag and drop", drag_and_drop)
     check("dark mode", dark_mode)
+    check("download from a link", link_download)
     with open(report_path, "w", encoding="utf-8") as f:
         f.write("\n".join(results) + "\n")
     return 0 if all(r.startswith("ok") for r in results) else 1
