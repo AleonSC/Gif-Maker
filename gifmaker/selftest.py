@@ -60,6 +60,17 @@ def run(report_path):
             made.append(f"{fmt} {os.path.getsize(dst)} bytes")
         return ", ".join(made)
 
+    def stream_file():
+        # .ts files (common for downloaded streams) crashed some older ffmpeg builds.
+        ts = os.path.join(os.path.dirname(src), "stream.ts")
+        subprocess.run([exe, "-y", "-loglevel", "error", "-i", src, "-c:v", "libx264",
+                        "-c:a", "aac", "-f", "mpegts", ts],
+                       check=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        dst = os.path.join(os.path.dirname(src), "from_ts.mp4")
+        err = ff.run_with_progress(ff.build_clip_command(exe, ts, dst, [(0.2, 1.2)], True), 1.0)
+        assert err is None, err
+        return str(ff.probe(exe, ts))
+
     def recycle_bin():
         from . import files
         path = os.path.join(tempfile.mkdtemp(), "delete me.txt")
@@ -109,6 +120,7 @@ def run(report_path):
     check("gif", gif)
     check("animations", animations)
     check("video clip", video)
+    check("stream (.ts) file", stream_file)
     check("delete to the Recycle Bin", recycle_bin)
     check("sound", sound)
     check("drag and drop", drag_and_drop)

@@ -197,6 +197,11 @@ def iter_keyframes(ffmpeg, path, width, height, min_gap, should_stop):
         proc.wait()
 
 
+# While the video encoder is still warming up, the sound waits in a queue; with
+# long or high-resolution clips it can overflow ("Too many packets buffered for
+# output stream"), so allow a much longer queue.
+MUXING_QUEUE = ["-max_muxing_queue_size", "9999"]
+
 # Animation output formats: name -> (file extension, file type label)
 ANIMATION_FORMATS = {
     "GIF": (".gif", "GIF image"),
@@ -252,7 +257,7 @@ def build_animation_command(ffmpeg, src, dst, start, end, fps, width, speed=1.0,
         ffmpeg, "-hide_banner", "-y", "-nostats", "-loglevel", "error",
         "-progress", "pipe:1",
         "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", src,
-        "-filter_complex", graph, "-an", *out,
+        "-filter_complex", graph, "-an", *out, *MUXING_QUEUE,
         dst,
     ]
 
@@ -313,7 +318,7 @@ def build_clip_command(ffmpeg, src, dst, sections, has_audio, pre_vf=""):
         cmd += ["-map", "[aj]", "-c:a", "aac", "-b:a", "192k"]
     cmd += [
         "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart",
+        "-movflags", "+faststart", *MUXING_QUEUE,
         dst,
     ]
     return cmd
