@@ -20,6 +20,7 @@ from . import single_instance
 from . import theme
 from . import updater
 from .export_dialog import ANIMATION_DEFAULTS, ExportDialog
+from .file_browser import FileBrowser
 from .grid_player import GridPlayer
 from .link_dialog import LinkDialog
 from .rename_tool import RenameTool
@@ -119,6 +120,8 @@ class GifMakerApp:
         self._sections_changed()
         self._enable_drop()
         self._poll_frame_queue()
+        if theme.load_setting("files_shown", False):
+            root.after(50, lambda: self.toggle_files(True))
         try:  # take videos opened from Explorer while this window is open
             self.listener = single_instance.Listener(
                 lambda path: self.root.after(0, lambda: self._handed_over(path)))
@@ -330,6 +333,8 @@ class GifMakerApp:
         self.open_video(path)
 
     def close(self):
+        self._remember_files_width()
+        self.browser.close()
         if self.listener:
             self.listener.close()
         # Stop the sound before Tk and Python shut down, or PortAudio can crash on exit.
@@ -388,6 +393,10 @@ class GifMakerApp:
         one.pack(side="right", padx=(0, 12))
         Tooltip(one, "Videos you open from Explorer play in this window, "
                      "instead of opening another GifMaker")
+        self.files_btn = ttk.Button(top, text="Files", width=6, command=self.toggle_files)
+        self.files_btn.pack(side="right", padx=(0, 12))
+        Tooltip(self.files_btn, "Show the videos in this folder as thumbnails beside the "
+                                "player  (F3)")
         autoplay = ttk.Checkbutton(top, text="Autoplay", variable=self.autoplay)
         autoplay.pack(side="right", padx=(0, 10))
         Tooltip(autoplay, "Start playing each video as soon as it opens, "
@@ -402,7 +411,14 @@ class GifMakerApp:
 
         # The video, with back/next buttons for the other videos in its folder. It
         # takes whatever room the window has, and the picture is scaled to fit.
-        view = ttk.Frame(main)
+        # The video and (when shown) the folder's files beside it, with a draggable
+        # divider between them.
+        self.split = ttk.PanedWindow(main, orient="horizontal")
+        view = ttk.Frame(self.split)
+        self.split.add(view, weight=1)
+        self.browser = FileBrowser(self.split, self.ffmpeg, self._browser_open,
+                                   lambda: self.toggle_files(False))
+        self.files_shown = False
         self.back_btn = ttk.Button(view, text="‹", width=2, style="Nav.TButton",
                                    command=lambda: self.open_neighbour(-1))
         self.back_btn.pack(side="left", fill="y", padx=(0, 4))
@@ -548,7 +564,7 @@ class GifMakerApp:
         edit.pack(side="bottom", fill="x", pady=(8, 0))
         bar.pack(side="bottom", fill="x", pady=(2, 0))
         scrub.pack(side="bottom", fill="x")
-        view.pack(side="top", fill="both", expand=True, pady=(8, 4))
+        self.split.pack(side="top", fill="both", expand=True, pady=(8, 4))
         # Hidden in fullscreen, which keeps just the video, timeline and play bar.
         self._windowed_only = [top, edit, statusbar]
         self._rows = [(w, w.pack_info()) for w in main.pack_slaves()]
@@ -566,6 +582,7 @@ class GifMakerApp:
         self.root.bind("<Control-v>", self._paste_link)
         self.root.bind("<F2>", lambda e: self.start_rename())
         self.root.bind("<F11>", self.toggle_fullscreen)
+        self.root.bind("<F3>", lambda e: self.toggle_files())
         self.root.bind("<Escape>", lambda e: self.fullscreen and self.toggle_fullscreen())
         self._update_nav()
         # Let the window be shrunk until the video is small, but no narrower than
@@ -742,12 +759,48 @@ class GifMakerApp:
     def _update_nav(self):
         for button, step in ((self.back_btn, -1), (self.next_btn, 1)):
             button.config(state="normal" if self._neighbour(step) else "disabled")
+        if self.files_shown:
+            self.browser.show(self._folder_videos() if self.video_path else [], self.video_path)
+
+    # ------------------------------------------------------- files panel
+    def toggle_files(self, show=None):
+        """Show or hide the thumbnails of the folder's videos beside the player."""
+        show = not self.files_shown if show is None else show
+        if show == self.files_shown:
+            return
+        if show:
+            width = int(theme.load_setting("files_width", 370))
+            self.split.add(self.browser, weight=0)
+            self.files_shown = True
+            self.root.update_idletasks()
+            total = self.split.winfo_width()
+            self.split.sashpos(0, max(200, total - width))
+            self._update_nav()
+        else:
+            self._remember_files_width()
+            self.split.forget(self.browser)
+            self.files_shown = False
+        self.files_btn.config(text="Files \u2713" if show else "Files")
+        if not self.fullscreen:  # fullscreen hides it for the moment, not for good
+            theme.save_setting("files_shown", show)
+
+    def _remember_files_width(self):
+        if self.files_shown and self.browser.winfo_width() > 50:
+            theme.save_setting("files_width", self.browser.winfo_width())
+
+    def _browser_open(self, path):
+        if self.busy:
+            self.status.set("Wait for the save to finish (or cancel it) first.")
+            return
+        self.open_video(path)
 
     # -------------------------------------------------------- fullscreen
     def toggle_fullscreen(self, _event=None):
         """Just the video, timeline and play bar, filling the screen (and back)."""
         self.fullscreen = not self.fullscreen
         if self.fullscreen:
+            self._files_before_fullscreen = self.files_shown
+            self.toggle_files(False)
             for widget in self._windowed_only:
                 widget.pack_forget()
             self.root.attributes("-fullscreen", True)
@@ -757,6 +810,8 @@ class GifMakerApp:
                 widget.pack_forget()
             for widget, packing in self._rows:
                 widget.pack(packing)
+            if getattr(self, "_files_before_fullscreen", False):
+                self.root.after(50, lambda: self.toggle_files(True))
 
     def _on_view_resize(self, event):
         """The video area changed size: centre the picture now, re-render it shortly."""

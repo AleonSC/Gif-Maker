@@ -182,8 +182,8 @@ def chain(*parts):
     return ",".join(p for p in parts if p)
 
 
-def grab_frame(ffmpeg, path, seconds, max_w, max_h, fast=False, pre_vf=""):
-    """Return the frame at `seconds` as PPM bytes for tk.PhotoImage, or None.
+def grab_frame(ffmpeg, path, seconds, max_w, max_h, fast=False, pre_vf="", codec="ppm"):
+    """Return the frame at `seconds` as PPM (or codec="png") bytes for tk.PhotoImage, or None.
 
     fast=True jumps to the nearest keyframe at or before `seconds` instead of
     decoding up to the exact frame: much quicker, but only approximate.
@@ -207,11 +207,12 @@ def grab_frame(ffmpeg, path, seconds, max_w, max_h, fast=False, pre_vf=""):
     cmd += [
         "-i", path, "-an", "-sn",
         "-frames:v", "1", "-vf", chain(_trim_video(origin), pre_vf, vf),
-        "-f", "image2pipe", "-vcodec", "ppm", "-",
+        "-f", "image2pipe", "-vcodec", codec, "-",
     ]
     proc = subprocess.run(cmd, capture_output=True, creationflags=_NO_WINDOW)
     if proc.returncode != 0 or not proc.stdout:
-        return grab_frame(ffmpeg, path, seconds, max_w, max_h, pre_vf=pre_vf) if fast else None
+        return grab_frame(ffmpeg, path, seconds, max_w, max_h, pre_vf=pre_vf,
+                          codec=codec) if fast else None
     return proc.stdout
 
 

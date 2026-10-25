@@ -50,6 +50,12 @@ The speed box, **Sound** switch and volume slider on the play bar set the playba
 pitch) and volume; the second, smaller slider (**Boost**) makes quiet videos up to 4x louder (very loud parts may distort). **Delete...** (or the Delete key) deletes the open video, after
 asking, to the Recycle Bin, and opens the next one in the folder.
 
+**Files** (top right, or F3) shows the videos in the current folder as thumbnails in a
+panel beside the player; click one to open it. The slider at the top of the panel (or
+Ctrl + mouse wheel over it) makes the thumbnails bigger or smaller, and the rows refit to
+however many fit across; drag the divider between the video and the panel to make it wider
+or narrower. Thumbnails are remembered, so a folder you've opened before shows at once.
+
 The **‹** and **›** buttons beside the video (or Page Up / Page Down) open the previous or
 next video in the same folder; tick **Autoplay** (top right) to have each one start playing
 as soon as it opens. With **One window** ticked (the default), videos you open from
