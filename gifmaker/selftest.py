@@ -66,10 +66,14 @@ def run(report_path):
         subprocess.run([exe, "-y", "-loglevel", "error", "-i", src, "-c:v", "libx264",
                         "-c:a", "aac", "-f", "mpegts", ts],
                        check=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        info = ff.probe(exe, ts)  # as the app does: this switches on pre-roll for .ts
         dst = os.path.join(os.path.dirname(src), "from_ts.mp4")
         err = ff.run_with_progress(ff.build_clip_command(exe, ts, dst, [(0.2, 1.2)], True), 1.0)
         assert err is None, err
-        return str(ff.probe(exe, ts))
+        out = ff.probe(exe, dst)
+        assert out.has_audio and abs(out.duration - 1.0) < 0.1, out
+        assert ff.grab_frame(exe, ts, 1.0, 160, 90), "no frame from the .ts"
+        return f"{info} -> cut {out.duration:.2f} s"
 
     def recycle_bin():
         from . import files

@@ -54,6 +54,41 @@ def format_time(seconds):
 
 VideoInfo = namedtuple("VideoInfo", "duration width height fps has_audio")
 
+# Formats without a keyframe index (.ts and .mpg recordings, raw streams): a seek
+# into them can land between keyframes, and ffmpeg 7 then loses the pictures up to
+# the next keyframe; a short cut can come out with none at all ("received no
+# packets"). For these, seek PREROLL seconds early, keep the file's own timestamps
+# (-copyts) and trim at the exact time after decoding. probe() records which files
+# need it, with the file's starting timestamp.
+PREROLL_FORMATS = {"mpegts", "mpeg", "mpegvideo", "h264", "hevc", "flv"}
+PREROLL = 10.0
+_preroll = {}  # path -> the file's start timestamp, for files that need pre-roll
+
+
+def _key(path):
+    return os.path.normcase(os.path.abspath(path))
+
+
+def _seek(path, start):
+    """How to read path from `start` (seconds into the video).
+
+    Returns (input args, extra seconds read before start, origin): origin is the
+    file's own timestamp for `start` when pre-roll is used (trim there), else None.
+    """
+    file_start = _preroll.get(_key(path))
+    if file_start is None:
+        return ["-ss", f"{start:.3f}"], 0.0, None
+    seek = max(0.0, start - PREROLL)
+    return ["-ss", f"{seek:.3f}", "-copyts"], start - seek, file_start + start
+
+
+def _trim_video(origin):
+    return f"trim=start={origin:.6f},setpts=PTS-STARTPTS" if origin is not None else ""
+
+
+def _trim_audio(origin):
+    return f"atrim=start={origin:.6f},asetpts=PTS-STARTPTS" if origin is not None else ""
+
 
 def probe(ffmpeg, path):
     """Return a VideoInfo for a video file.
@@ -89,7 +124,30 @@ def probe(ffmpeg, path):
     if m and round(abs(float(m.group(1)))) % 180 == 90:
         width, height = height, width
     has_audio = any("Audio:" in l for l in info.splitlines())
+    m = re.search(r"Input #0, (.+?), from ", info)
+    formats = set(m.group(1).split(",")) if m else set()
+    if formats & PREROLL_FORMATS:
+        _preroll[_key(path)] = _first_frame_time(ffmpeg, path, info)
+    else:
+        _preroll.pop(_key(path), None)
     return VideoInfo(duration, width, height, fps, has_audio)
+
+
+def _first_frame_time(ffmpeg, path, info):
+    """The file's own timestamp of its first picture, where the video really starts.
+
+    The "start:" ffmpeg reports can be earlier: it counts the sound's priming
+    samples, which the decoder drops.
+    """
+    proc = subprocess.run(
+        [ffmpeg, "-hide_banner", "-copyts", "-i", path, "-map", "0:v:0", "-frames:v", "1",
+         "-vf", "showinfo", "-f", "null", "-"],
+        capture_output=True, text=True, errors="replace", creationflags=_NO_WINDOW)
+    m = re.search(r"pts_time:\s*(-?[\d.]+)", proc.stderr)
+    if m:
+        return float(m.group(1))
+    m = re.search(r"start:\s*(-?[\d.]+)", info)
+    return float(m.group(1)) if m else 0.0
 
 
 def transform_filters(rotate=0, flip=False, crop=None):
@@ -136,13 +194,16 @@ def grab_frame(ffmpeg, path, seconds, max_w, max_h, fast=False, pre_vf=""):
     if fast:
         cmd += ["-noaccurate_seek", "-skip_frame", "nokey"]
         vf += ":flags=fast_bilinear"
-    cmd += ["-ss", f"{seconds:.3f}"]
+        seek, origin = ["-ss", f"{seconds:.3f}"], None
+    else:
+        seek, _, origin = _seek(path, seconds)
+    cmd += seek
     if fast:
         # Without this ffmpeg drops a keyframe that lies before the seek point.
         cmd += ["-copyts"]
     cmd += [
         "-i", path, "-an", "-sn",
-        "-frames:v", "1", "-vf", chain(pre_vf, vf),
+        "-frames:v", "1", "-vf", chain(_trim_video(origin), pre_vf, vf),
         "-f", "image2pipe", "-vcodec", "ppm", "-",
     ]
     proc = subprocess.run(cmd, capture_output=True, creationflags=_NO_WINDOW)
@@ -227,7 +288,8 @@ def build_animation_command(ffmpeg, src, dst, start, end, fps, width, speed=1.0,
     Forward, Reverse, or Boomerang (forward then back). GIFs use a palette made
     for the clip (two-pass), which gives much better colours than the default.
     """
-    filters = [pre_vf]
+    seek, pre, origin = _seek(src, start)
+    filters = [_trim_video(origin), pre_vf]
     if speed != 1.0:
         filters.append(f"setpts=PTS/{speed}")
     filters.append(f"fps={fps}")
@@ -256,7 +318,7 @@ def build_animation_command(ffmpeg, src, dst, start, end, fps, width, speed=1.0,
     return [
         ffmpeg, "-hide_banner", "-y", "-nostats", "-loglevel", "error",
         "-progress", "pipe:1",
-        "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", src,
+        *seek, "-t", f"{end - start + pre:.3f}", "-i", src,
         "-filter_complex", graph, "-an", *out, *MUXING_QUEUE,
         dst,
     ]
@@ -299,15 +361,24 @@ def build_clip_command(ffmpeg, src, dst, sections, has_audio, pre_vf=""):
     joined = ""
     for i, (start, end) in enumerate(sections):
         length = end - start
-        cmd += ["-ss", f"{start:.3f}", "-t", f"{length:.3f}", "-i", src]
+        seek, pre, origin = _seek(src, start)
+        cmd += [*seek, "-t", f"{length + pre:.3f}", "-i", src]
         # Timestamps are kept relative to the cut (not reset to the first whole frame)
         # so each piece's picture and sound end together and joins don't drift.
-        graph.append(f"[{i}:v:0]trim=end={length:.3f}[v{i}]")
+        if origin is None:
+            cut = f"trim=end={length:.3f}"
+        else:
+            cut = f"trim=start={origin:.6f}:end={origin + length:.6f},setpts=PTS-{origin:.6f}/TB"
+        graph.append(f"[{i}:v:0]{cut}[v{i}]")
         joined += f"[v{i}]"
         if has_audio:
             # Pad or trim each piece's sound to the piece's exact length, so the
             # sound can't drift out of step with the picture across the joins.
-            graph.append(f"[{i}:a:0]apad,atrim=end={length:.3f}[a{i}]")
+            if origin is None:
+                cut = f"atrim=end={length:.3f}"
+            else:
+                cut = f"atrim=start={origin:.6f}:end={origin + length:.6f},asetpts=PTS-{origin:.6f}/TB"
+            graph.append(f"[{i}:a:0]apad,{cut}[a{i}]")
             joined += f"[a{i}]"
     audio = 1 if has_audio else 0
     graph.append(f"{joined}concat=n={len(sections)}:v=1:a={audio}[vj]" + ("[aj]" if audio else ""))
@@ -386,13 +457,15 @@ def open_raw_stream(ffmpeg, path, start, width, height, fps, duration=None,
 
     duration is in source seconds; output frames come at `fps` after the speed change.
     """
-    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", f"{start:.3f}"]
+    seek, pre, origin = _seek(path, start)
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", *seek]
     if duration is not None:
-        cmd += ["-t", f"{duration:.3f}"]
+        cmd += ["-t", f"{duration + pre:.3f}"]
     setpts = f"setpts=PTS/{speed}" if speed != 1.0 else ""
     cmd += [
         "-i", path, "-an", "-sn",
-        "-vf", chain(pre_vf, setpts, f"fps={fps}", f"scale={width}:{height}:flags=bilinear"),
+        "-vf", chain(_trim_video(origin), pre_vf, setpts, f"fps={fps}",
+                     f"scale={width}:{height}:flags=bilinear"),
         "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
     ]
     return subprocess.Popen(
@@ -423,11 +496,12 @@ def open_audio_stream(ffmpeg, path, start, rate, channels, speed=1.0):
 
     speed plays it faster or slower, keeping the pitch.
     """
-    tempo = ["-af", atempo_filters(speed)] if speed != 1.0 else []
+    seek, _, origin = _seek(path, start)
+    af = chain(_trim_audio(origin), atempo_filters(speed) if speed != 1.0 else "")
     return subprocess.Popen(
         [
-            ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", f"{start:.3f}",
-            "-i", path, "-vn", "-sn", "-dn", *tempo,
+            ffmpeg, "-hide_banner", "-loglevel", "error", *seek,
+            "-i", path, "-vn", "-sn", "-dn", *(["-af", af] if af else []),
             "-f", "s16le", "-acodec", "pcm_s16le", "-ac", str(channels), "-ar", str(rate), "-",
         ],
         stdout=subprocess.PIPE,
@@ -445,8 +519,10 @@ def save_frame(ffmpeg, path, seconds, dst, vf=""):
     """
     cmd = [
         ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
-        "-ss", f"{seconds:.3f}", "-i", path, "-frames:v", "1", "-update", "1",
     ]
+    seek, _, origin = _seek(path, seconds)
+    cmd += [*seek, "-i", path, "-frames:v", "1", "-update", "1"]
+    vf = chain(_trim_video(origin), vf)
     if vf:
         cmd += ["-vf", vf]
     if os.path.splitext(dst)[1].lower() in (".jpg", ".jpeg"):
