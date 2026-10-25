@@ -110,7 +110,7 @@ class GifMakerApp:
         self.play_speed = tk.StringVar(value="1\u00D7")
         self.volume = tk.DoubleVar(value=100)
         self.boost = tk.DoubleVar(value=100)  # percent; not saved, so it never starts loud
-        self.status = tk.StringVar(value="Open a video to get started.")
+        self.status = tk.StringVar()  # results and problems; empty otherwise
 
         self._build_ui()
         self._sections_changed()
@@ -574,8 +574,7 @@ class GifMakerApp:
         self._build_thumbs()
         self.start_text.set(ff.format_time(0))
         self.end_text.set(ff.format_time(min(duration, 3.0)))
-        self.status.set("Mark the part you want with [ and ] (or drag the green and red "
-                        "markers), then Make GIF or Save video.")
+        self.status.set("")
         self._update_nav()
         self._seek(0.0)
         if self.autoplay.get():
@@ -730,7 +729,7 @@ class GifMakerApp:
         self.end_text.set(ff.format_time(0))
         self.timeline.set_duration(0)
         self._update_nav()
-        self.status.set("Open a video to get started.")
+        self.status.set("")
 
     def delete_file(self):
         """Delete the open video (to the Recycle Bin on Windows) after asking."""
