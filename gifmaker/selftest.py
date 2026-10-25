@@ -75,6 +75,17 @@ def run(report_path):
         assert ff.grab_frame(exe, ts, 1.0, 160, 90), "no frame from the .ts"
         return f"{info} -> cut {out.duration:.2f} s"
 
+    def fingerprints():
+        from . import similarity as sim
+        sig = sim.fingerprint(exe, src)
+        assert sig and len(sig["frames"]) == 3, sig
+        smaller = os.path.join(os.path.dirname(src), "smaller copy.mp4")
+        subprocess.run([exe, "-y", "-loglevel", "error", "-i", src, "-vf", "scale=160:90",
+                        "-crf", "30", smaller], check=True,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        assert sim.look_alike(sig, sim.fingerprint(exe, smaller)), "copy not recognised"
+        return f"3 frames, colour {sim.swatch_rgb(sig)}; a resized copy is recognised"
+
     def renaming():
         from . import files
         folder = tempfile.mkdtemp()
@@ -148,6 +159,7 @@ def run(report_path):
     check("animations", animations)
     check("video clip", video)
     check("stream (.ts) file", stream_file)
+    check("picture fingerprints", fingerprints)
     check("renaming", renaming)
     check("delete to the Recycle Bin", recycle_bin)
     check("sound", sound)

@@ -7,15 +7,22 @@ import tkinter as tk
 from concurrent.futures import ThreadPoolExecutor
 from tkinter import filedialog, messagebox, ttk
 
-from . import ffmpeg_tools as ff
 from . import files
+from . import similarity as sim
 from . import theme
 
 ORDERS = ("Name", "Date modified", "Size", "Colour")
 DIGITS = {"None (1, 2 ... 10)": None, "Auto (01 ... 10)": "auto", "2 (01)": 2, "3 (001)": 3,
           "4 (0001)": 4}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
-_colors = {}  # file identity -> average colour, kept while the app runs
+_sigs = None  # file identity -> picture fingerprint; loaded from disk when first needed
+
+
+def _fingerprints():
+    global _sigs
+    if _sigs is None:
+        _sigs = sim.load_cache()
+    return _sigs
 
 
 class RenameTool(tk.Toplevel):
@@ -28,6 +35,7 @@ class RenameTool(tk.Toplevel):
         self.swatches = {}
         self.color_token = 0
         self.reading_colors = False
+        self.labels = {}  # name -> look-alike group number
         self.title("Rename files")
         self.geometry("860x640")
         self.minsize(640, 420)
@@ -36,13 +44,15 @@ class RenameTool(tk.Toplevel):
         self.all_files = tk.BooleanVar(value=False)
         self.order = tk.StringVar(value="Name")
         self.reverse = tk.BooleanVar(value=False)
+        self.together = tk.BooleanVar(value=True)
         self.prefix = tk.StringVar(value="")
         self.separator = tk.StringVar(value="-")
         self.start = tk.StringVar(value="1")
         self.digits = tk.StringVar(value=list(DIGITS)[0])
         self.status = tk.StringVar()
         self._build()
-        for var in (self.reverse, self.prefix, self.separator, self.start, self.digits):
+        for var in (self.reverse, self.together, self.prefix, self.separator, self.start,
+                    self.digits):
             var.trace_add("write", lambda *_: self.refresh())
         self.protocol("WM_DELETE_WINDOW", self.close)
         if folder:
@@ -79,10 +89,13 @@ class RenameTool(tk.Toplevel):
         box.grid(row=0, column=0, **pad)
         box.bind("<<ComboboxSelected>>", lambda e: self._order_changed())
         ttk.Checkbutton(order, text="Reverse", variable=self.reverse).grid(row=0, column=1, **pad)
-        ttk.Label(order, style="Muted.TLabel", wraplength=230, justify="left",
-                  text="Colour groups videos by the average colour of their pictures: "
-                       "reds, oranges, yellows, greens, blues, purples, then greys."
-                  ).grid(row=1, column=0, columnspan=2, sticky="w", **pad)
+        ttk.Checkbutton(order, text="Keep look-alikes together", variable=self.together).grid(
+            row=1, column=0, columnspan=2, sticky="w", **pad)
+        ttk.Label(order, style="Muted.TLabel", wraplength=250, justify="left",
+                  text="Colour: reds, oranges, yellows, greens, blues, purples, then "
+                       "multicoloured, then greys. Look-alikes (the same video re-encoded, "
+                       "resized or renamed) sit together, marked A, B, C..."
+                  ).grid(row=2, column=0, columnspan=2, sticky="w", **pad)
 
         naming = ttk.LabelFrame(options, text="New names", padding=6)
         naming.pack(side="left", fill="both", expand=True, padx=(10, 0))
@@ -101,13 +114,15 @@ class RenameTool(tk.Toplevel):
 
         table = ttk.Frame(main)
         table.pack(fill="both", expand=True, pady=(10, 0))
-        self.tree = ttk.Treeview(table, columns=("old", "new"), selectmode="none")
+        self.tree = ttk.Treeview(table, columns=("alike", "old", "new"), selectmode="none")
         self.tree.heading("#0", text="#")
+        self.tree.heading("alike", text="Look-alike")
         self.tree.heading("old", text="Current name")
         self.tree.heading("new", text="New name")
         self.tree.column("#0", width=70, stretch=False)
-        self.tree.column("old", width=340)
-        self.tree.column("new", width=340)
+        self.tree.column("alike", width=95, stretch=False, anchor="center")
+        self.tree.column("old", width=320)
+        self.tree.column("new", width=320)
         scroll = ttk.Scrollbar(table, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
@@ -158,16 +173,22 @@ class RenameTool(tk.Toplevel):
 
     # ------------------------------------------------------------ colour
     def _color_key(self, name):
-        """Identifies a file's contents, but not its name, so colours survive renaming."""
+        """Identifies a file's contents but not its name, so fingerprints survive renaming."""
         try:
             stat = os.stat(os.path.join(self.folder, name))
         except OSError:
             return None
-        return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+        # Some drives (FAT, network) have no file IDs: fall back to the path then.
+        file_id = stat.st_ino or os.path.normcase(os.path.join(self.folder, name))
+        return f"{stat.st_dev}:{file_id}:{stat.st_size}:{stat.st_mtime_ns}"
+
+    def _sig(self, name):
+        return _fingerprints().get(self._color_key(name))
 
     def _read_colors(self):
-        """Work out the average colour of each file in the background."""
-        todo = [n for n in self.names if self._color_key(n) not in _colors]
+        """Fingerprint each file's pictures in the background (saved for next time)."""
+        cache = _fingerprints()
+        todo = [n for n in self.names if self._color_key(n) not in cache]
         if not todo:
             self.refresh()
             return
@@ -179,9 +200,9 @@ class RenameTool(tk.Toplevel):
 
         def one(name):
             key = self._color_key(name)
-            rgb = ff.average_color(ffmpeg, os.path.join(folder, name))
+            sig = sim.fingerprint(ffmpeg, os.path.join(folder, name))
             if key:
-                _colors[key] = rgb
+                cache[key] = sig
             done[0] += 1
             self._from_thread(lambda: token == self.color_token and self._color_progress(done[0], len(todo)))
 
@@ -191,6 +212,7 @@ class RenameTool(tk.Toplevel):
                     if token != self.color_token:
                         break
                     pool.submit(one, name)
+            sim.save_cache(cache)
             self._from_thread(lambda: token == self.color_token and self._colors_done())
 
         threading.Thread(target=work, daemon=True).start()
@@ -203,15 +225,15 @@ class RenameTool(tk.Toplevel):
 
     def _color_progress(self, done, total):
         self.progress.config(value=done / total)
-        self.status.set(f"Reading colours... {done} of {total}")
+        self.status.set(f"Reading pictures... {done} of {total}")
 
     def _colors_done(self):
         self.reading_colors = False
         self.progress.config(value=0)
         self.refresh()
 
-    def _swatch(self, rgb):
-        color = "#%02x%02x%02x" % rgb if rgb else None
+    def _swatch(self, sig):
+        color = "#%02x%02x%02x" % sim.swatch_rgb(sig) if sig else None
         if color not in self.swatches:
             image = tk.PhotoImage(master=self, width=22, height=12)
             if color:
@@ -227,8 +249,10 @@ class RenameTool(tk.Toplevel):
             names.sort(key=lambda n: os.path.getmtime(os.path.join(folder, n)))
         elif order == "Size":
             names.sort(key=lambda n: os.path.getsize(os.path.join(folder, n)))
-        elif order == "Colour":
-            names.sort(key=lambda n: ff.color_sort_key(_colors.get(self._color_key(n))))
+        self.labels = {}
+        if order == "Colour":
+            sigs = {n: self._sig(n) for n in names}
+            names, self.labels = sim.order(names, sigs, self.together.get())
         if self.reverse.get():
             names.reverse()
         return names
@@ -256,12 +280,16 @@ class RenameTool(tk.Toplevel):
             [(n, "") for n in self.names]
         show_color = self.order.get() == "Colour" and not self.reading_colors
         for i, (old, new) in enumerate(plan, 1):
-            image = self._swatch(_colors.get(self._color_key(old))) if show_color else ""
-            self.tree.insert("", "end", text=f" {i}", image=image, values=(old, new))
+            image = self._swatch(self._sig(old)) if show_color else ""
+            alike = sim.group_label(self.labels[old]) if old in self.labels else ""
+            self.tree.insert("", "end", text=f" {i}", image=image, values=(alike, old, new))
         changes = sum(1 for old, new in plan if new and old != new)
         if not self.reading_colors:
             what = "file" if len(plan) == 1 else "files"
-            self.status.set(f"{len(plan)} {what}; {changes} will be renamed." if plan
+            groups = len(set(self.labels.values()))
+            alike = (f" {groups} group{'s' if groups > 1 else ''} of look-alikes."
+                     if groups else "")
+            self.status.set(f"{len(plan)} {what}; {changes} will be renamed.{alike}" if plan
                             else "No files to rename here.")
         self.rename_btn.config(state="normal" if changes and not self.reading_colors else "disabled")
 

@@ -50,9 +50,11 @@ and each one has its own sound switch (off to begin with).
 
 **Rename files** (top right) renames everything in a folder with a numbered pattern,
 like `1, 2, 3` or `videogames-1, videogames-2` (with optional zero-padding), in name, date,
-size or **colour** order. Colour order groups videos by the average colour of their
-pictures (reds, oranges, yellows, greens, blues, purples, then greys), so similar-looking
-videos end up next to each other. It shows the old and new names before changing
+size or **colour** order. Colour order groups videos by colour (reds, oranges, yellows,
+greens, blues, purples, then multicoloured, then greys), read from three frames of each
+video with black bars ignored. Look-alikes (the same video re-encoded, resized, trimmed
+slightly or renamed) are kept next to each other and marked A, B, C... so duplicates are
+easy to spot. What it reads is saved, so sorting the same folder again is instant. It shows the old and new names before changing
 anything, and **Undo last rename** puts them back.
 
 **Dark mode** (top right) switches the whole app to dark colours, title bars included. It's
