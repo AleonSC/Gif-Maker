@@ -77,9 +77,12 @@ def _seek(path, start):
     """
     file_start = _preroll.get(_key(path))
     if file_start is None:
-        return ["-ss", f"{start:.3f}"], 0.0, None
+        # No seek at all from the very start: with ffmpeg 7 even "-ss 0" makes some
+        # still images (JPEGs) come out empty.
+        return (["-ss", f"{start:.3f}"] if start > 0 else []), 0.0, None
     seek = max(0.0, start - PREROLL)
-    return ["-ss", f"{seek:.3f}", "-copyts"], start - seek, file_start + start
+    args = (["-ss", f"{seek:.3f}"] if seek > 0 else []) + ["-copyts"]
+    return args, start - seek, file_start + start
 
 
 def _trim_video(origin):
@@ -194,7 +197,7 @@ def grab_frame(ffmpeg, path, seconds, max_w, max_h, fast=False, pre_vf=""):
     if fast:
         cmd += ["-noaccurate_seek", "-skip_frame", "nokey"]
         vf += ":flags=fast_bilinear"
-        seek, origin = ["-ss", f"{seconds:.3f}"], None
+        seek, origin = (["-ss", f"{seconds:.3f}"] if seconds > 0 else []), None
     else:
         seek, _, origin = _seek(path, seconds)
     cmd += seek

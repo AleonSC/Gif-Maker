@@ -1,4 +1,4 @@
-"""Picture fingerprints for sorting videos by colour and spotting look-alikes.
+"""Picture fingerprints for sorting videos and photos by colour and spotting look-alikes.
 
 Each video gets a fingerprint of three frames (20%, 50% and 80% through). For
 each frame, after trimming black bars: a 4x4 grid of colours in OKLab (a colour
@@ -21,9 +21,10 @@ SAME_HASH = 12  # at most this many of 64 hash bits may differ for a matching fr
 SAME_COLOR = 0.06  # and the colour grids at most this far apart on average,
 SAME_CELL = 0.2  # with no single cell further apart than this (a different overlay, say)
 SAME_LENGTH = 0.03  # videos must be within 3% (or 1 s) of each other's length
-NEUTRAL_CHROMA = 0.035  # an average colour less colourful than this isn't one colour
-MIXED_CHROMA = 0.06  # ...but if its parts are this colourful on average, it's multicoloured
-VERSION = 2  # bump when the fingerprint changes, so old saved ones are ignored
+NEUTRAL_CHROMA = 0.035  # a main colour less colourful than this is a grey
+PALETTE = 4  # colours found in each picture
+VIVID = 0.12  # chroma at which a colour counts as fully vivid when picking the main colour
+VERSION = 3  # bump when the fingerprint changes, so old saved ones are ignored
 
 
 # ------------------------------------------------------------- colour
@@ -45,7 +46,8 @@ def oklab(r, g, b):
 
 # ------------------------------------------------------------- frames
 def _frame_fingerprint(rgb):
-    """rgb: GRAB*GRAB*3 bytes. Returns (cells, hash, mean) or None if it's all black."""
+    """rgb: GRAB*GRAB*3 bytes. Returns (cells, hash, mean, samples) or None if it's all
+    black; samples are (weight, colour) pixels for finding the picture's main colours."""
     lab = [oklab(rgb[i], rgb[i + 1], rgb[i + 2]) for i in range(0, len(rgb), 3)]
     lightness = [p[0] for p in lab]
     rows = [max(lightness[y * GRAB:(y + 1) * GRAB]) for y in range(GRAB)]
@@ -75,7 +77,52 @@ def _frame_fingerprint(rgb):
         for x in range(8):
             bits = (bits << 1) | (grid[y][x] > grid[y][x + 1])
     mean = tuple(sum(c[i] for c in cells) / len(cells) for i in range(3))
-    return cells, bits, mean
+    # Pixels for the palette: 2x2 blocks of the trimmed picture, weighted towards the
+    # middle, where the subject usually is.
+    samples = []
+    w, h = right - left + 1, bottom - top + 1
+    for y in range(0, h - 1, 2):
+        for x in range(0, w - 1, 2):
+            block = [lab[(top + y + dy) * GRAB + left + x + dx] for dy in (0, 1) for dx in (0, 1)]
+            color = tuple(sum(p[c] for p in block) / 4 for c in range(3))
+            off_centre = math.hypot((x + 1) / w - 0.5, (y + 1) / h - 0.5) / 0.7071
+            samples.append((2.0 - off_centre, color))
+    return cells, bits, mean, samples
+
+
+def palette(samples, k=PALETTE, rounds=8):
+    """The k main colours of weighted (weight, colour) samples, as [(share, colour)],
+    biggest first. Plain k-means, started from colours far apart (so it's repeatable)."""
+    total = sum(w for w, _ in samples)
+    mean = tuple(sum(w * c[i] for w, c in samples) / total for i in range(3))
+    centres = [min((c for _, c in samples), key=lambda c: math.dist(c, mean))]
+    while len(centres) < k:
+        far = max(samples, key=lambda s: min(math.dist(s[1], c) for c in centres))[1]
+        if min(math.dist(far, c) for c in centres) < 0.02:
+            break  # the picture doesn't have k different colours
+        centres.append(far)
+    for _ in range(rounds):
+        sums = [[0.0, 0.0, 0.0, 0.0] for _ in centres]
+        for w, c in samples:
+            i = min(range(len(centres)), key=lambda j: math.dist(c, centres[j]))
+            acc = sums[i]
+            acc[0] += w
+            acc[1] += w * c[0]
+            acc[2] += w * c[1]
+            acc[3] += w * c[2]
+        centres = [(a[1] / a[0], a[2] / a[0], a[3] / a[0]) if a[0] else centres[i]
+                   for i, a in enumerate(sums)]
+    shares = [a[0] / total for a in sums]
+    return sorted(((s, c) for s, c in zip(shares, centres) if s > 0), reverse=True)
+
+
+def main_color(colors):
+    """The colour a person would call "the colour of this picture": mostly the biggest
+    area, but vivid colours count for more than greys, black or white."""
+    def score(entry):
+        share, (L, a, b) = entry
+        return share * (0.35 + min(math.hypot(a, b) / VIVID, 1.5))
+    return max(colors, key=score)[1]
 
 
 def fingerprint(ffmpeg, path):
@@ -99,14 +146,20 @@ def fingerprint(ffmpeg, path):
     if not frames:
         return None
     mean = tuple(sum(f[2][i] for f in frames) / len(frames) for i in range(3))
-    cells = [c for f in frames for c in f[0]]
-    colorful = sum(math.hypot(c[1], c[2]) for c in cells) / len(cells)
-    return {"duration": duration, "frames": frames, "mean": mean, "colorful": colorful}
+    colors = palette([s for f in frames for s in f[3]])
+    return {"duration": duration, "frames": [f[:3] for f in frames], "mean": mean,
+            "palette": [(share, color) for share, color in colors],
+            "main": main_color(colors)}
 
 
 def swatch_rgb(sig):
-    """An sRGB colour for showing a fingerprint's average colour."""
-    L, a, b = sig["mean"]
+    """sRGB for a fingerprint's main colour."""
+    return to_rgb(sig["main"])
+
+
+def to_rgb(color):
+    """OKLab -> sRGB 0..255."""
+    L, a, b = color
     l_ = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3
     m_ = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3
     s_ = (L - 0.0894841775 * a - 1.2914855480 * b) ** 3
@@ -143,15 +196,16 @@ def look_alike(s1, s2):
     return matches >= max(1, len(pairs) - 1)  # all but one frame (e.g. a different intro)
 
 
-def color_key(mean, colorful):
-    """Groups colours by hue (reds, oranges, yellows, greens, blues, purples), darker to
-    lighter within each; then multicoloured pictures (whose colours average out), then
-    greys, black and white."""
-    L, a, b = mean
+def color_key(main):
+    """Groups main colours by hue (reds, oranges, yellows, greens, blues, purples), then
+    greys, black and white. Lightness runs dark to light in one hue group and light to
+    dark in the next, so neighbouring groups meet at similar shades (no jumps)."""
+    L, a, b = main
     if math.hypot(a, b) < NEUTRAL_CHROMA or L < 0.15:
-        return (1 if colorful >= MIXED_CHROMA and L >= 0.15 else 2, 0, L)
+        return (1, 0, L)
     hue = (math.degrees(math.atan2(b, a)) + 360 - 15) % 360  # start just before red
-    return (0, int(hue // 30), L)
+    group = int(hue // 30)
+    return (0, group, L if group % 2 == 0 else -L)
 
 
 def order(names, sigs, keep_together=True):
@@ -183,8 +237,8 @@ def order(names, sigs, keep_together=True):
         groups.setdefault(root(n), []).append(n)
 
     def group_key(members):
-        mean = tuple(sum(sigs[n]["mean"][i] for n in members) / len(members) for i in range(3))
-        return color_key(mean, sum(sigs[n]["colorful"] for n in members) / len(members))
+        return color_key(tuple(sum(sigs[n]["main"][i] for n in members) / len(members)
+                               for i in range(3)))
 
     ordered, labels = [], {}
     for members in sorted(groups.values(), key=group_key):
@@ -221,7 +275,8 @@ def load_cache():
         for key, sig in data["files"].items():
             if sig:
                 sig["frames"] = [(cells, bits, tuple(mean)) for cells, bits, mean in sig["frames"]]
-                sig["mean"] = tuple(sig["mean"])
+                sig["mean"], sig["main"] = tuple(sig["mean"]), tuple(sig["main"])
+                sig["palette"] = [(share, tuple(color)) for share, color in sig["palette"]]
             cache[key] = sig
         return cache
     except (OSError, ValueError, KeyError, TypeError):

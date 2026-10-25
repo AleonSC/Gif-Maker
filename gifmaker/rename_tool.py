@@ -92,9 +92,10 @@ class RenameTool(tk.Toplevel):
         ttk.Checkbutton(order, text="Keep look-alikes together", variable=self.together).grid(
             row=1, column=0, columnspan=2, sticky="w", **pad)
         ttk.Label(order, style="Muted.TLabel", wraplength=250, justify="left",
-                  text="Colour: reds, oranges, yellows, greens, blues, purples, then "
-                       "multicoloured, then greys. Look-alikes (the same video re-encoded, "
-                       "resized or renamed) sit together, marked A, B, C..."
+                  text="Colour: by each picture's main colour (the swatch's left block): "
+                       "reds, oranges, yellows, greens, blues, purples, then greys. "
+                       "Look-alikes (the same video or photo re-encoded, resized or renamed) "
+                       "sit together, marked A, B, C..."
                   ).grid(row=2, column=0, columnspan=2, sticky="w", **pad)
 
         naming = ttk.LabelFrame(options, text="New names", padding=6)
@@ -119,7 +120,7 @@ class RenameTool(tk.Toplevel):
         self.tree.heading("alike", text="Look-alike")
         self.tree.heading("old", text="Current name")
         self.tree.heading("new", text="New name")
-        self.tree.column("#0", width=70, stretch=False)
+        self.tree.column("#0", width=86, stretch=False)
         self.tree.column("alike", width=95, stretch=False, anchor="center")
         self.tree.column("old", width=320)
         self.tree.column("new", width=320)
@@ -233,13 +234,25 @@ class RenameTool(tk.Toplevel):
         self.refresh()
 
     def _swatch(self, sig):
-        color = "#%02x%02x%02x" % sim.swatch_rgb(sig) if sig else None
-        if color not in self.swatches:
-            image = tk.PhotoImage(master=self, width=22, height=12)
-            if color:
-                image.put(color, to=(0, 0, 22, 12))
-            self.swatches[color] = image
-        return self.swatches[color]
+        """The main colour on the left, then the picture's palette in proportion."""
+        if not sig:
+            key = None
+        else:
+            key = (sim.swatch_rgb(sig),
+                   tuple((round(share, 2), sim.to_rgb(color)) for share, color in sig["palette"]))
+        if key not in self.swatches:
+            image = tk.PhotoImage(master=self, width=34, height=12)
+            if key:
+                hex_color = lambda rgb: "#%02x%02x%02x" % rgb
+                image.put(hex_color(key[0]), to=(0, 0, 10, 12))
+                x, total = 12, sum(share for share, _ in key[1]) or 1
+                for i, (share, rgb) in enumerate(key[1]):
+                    x2 = 34 if i == len(key[1]) - 1 else min(34, x + max(1, round(22 * share / total)))
+                    if x2 > x:
+                        image.put(hex_color(rgb), to=(x, 0, x2, 12))
+                    x = x2
+            self.swatches[key] = image
+        return self.swatches[key]
 
     # ----------------------------------------------------------- preview
     def _ordered(self):

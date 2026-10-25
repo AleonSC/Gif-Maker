@@ -50,9 +50,11 @@ and each one has its own sound switch (off to begin with).
 
 **Rename files** (top right) renames everything in a folder with a numbered pattern,
 like `1, 2, 3` or `videogames-1, videogames-2` (with optional zero-padding), in name, date,
-size or **colour** order. Colour order groups videos by colour (reds, oranges, yellows,
-greens, blues, purples, then multicoloured, then greys), read from three frames of each
-video with black bars ignored. Look-alikes (the same video re-encoded, resized, trimmed
+size or **colour** order. Colour order sorts videos and photos by their *main* colour (reds,
+oranges, yellows, greens, blues, purples, then greys), so a red flower on a white table
+counts as red rather than pale pink. It finds each picture's four main colours, favouring
+vivid ones and the middle of the picture, reads three frames of each video with black bars
+ignored, and runs each colour group dark-to-light then light-to-dark so neighbours blend. Look-alikes (the same video re-encoded, resized, trimmed
 slightly or renamed) are kept next to each other and marked A, B, C... so duplicates are
 easy to spot. What it reads is saved, so sorting the same folder again is instant. It shows the old and new names before changing
 anything, and **Undo last rename** puts them back.
