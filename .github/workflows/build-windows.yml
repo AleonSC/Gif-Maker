@@ -1,9 +1,11 @@
 name: Build Windows exe
 
+# Every build gets a version number (1.0.<run number>). Pushes to the default
+# branch also publish it as a GitHub release, which installed copies of the app
+# find and update themselves to.
 on:
   push:
     branches: ["**"]
-    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -22,6 +24,14 @@ jobs:
 
       - name: Install dependencies
         run: python -m pip install -r requirements-build.txt
+
+      - name: Set the version
+        shell: pwsh
+        run: |
+          $v = "1.0.${{ github.run_number }}"
+          "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Set-Content gifmaker\version.py "__version__ = `"$v`""
+          Get-Content gifmaker\version.py
 
       - name: Smoke test GIF conversion
         shell: python
@@ -52,25 +62,71 @@ jobs:
           r = TkinterDnD.Tk(); r.drop_target_register(DND_FILES);
           print('tkdnd', r.tk.call('package', 'require', 'tkdnd')); r.destroy()"
 
-      - name: Build exe
+      - name: Build the app
         run: >
-          python -m PyInstaller --noconfirm --onefile --windowed --name GifMaker
+          python -m PyInstaller --noconfirm --onedir --windowed --name GifMaker
+          --icon assets\gifmaker.ico --add-data "assets;assets"
           --collect-all imageio_ffmpeg --collect-all tkinterdnd2 run_gifmaker.py
 
-      - name: Self-test the packaged exe
+      - name: Self-test the packaged app
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath dist\GifMaker.exe -ArgumentList '--selftest', "$PWD\selftest.txt" -Wait -PassThru
+          $p = Start-Process -FilePath dist\GifMaker\GifMaker.exe -ArgumentList '--selftest', "$PWD\selftest.txt" -Wait -PassThru
           Get-Content selftest.txt
           exit $p.ExitCode
 
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup --no-progress -y | Out-Null }
+          & $iscc /Q "/DAppVersion=$env:VERSION" installer\GifMaker.iss
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Compress-Archive -Path dist\GifMaker -DestinationPath dist\GifMaker-portable.zip
+
+      - name: Test the installer
+        shell: pwsh
+        run: |
+          $p = Start-Process dist\GifMaker-Setup.exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NOLAUNCH' -Wait -PassThru
+          if ($p.ExitCode) { throw "installer failed: $($p.ExitCode)" }
+          $app = "$env:LOCALAPPDATA\Programs\GifMaker"
+          Get-Content "$app\install.ini"
+          $cmd = (Get-ItemProperty 'HKCU:\Software\Classes\GifMaker.Video\shell\open\command').'(default)'
+          "open command: $cmd"
+          if ((Get-ItemProperty 'HKCU:\Software\RegisteredApplications').GifMaker -ne 'Software\GifMaker\Capabilities') { throw "not registered" }
+          (Get-ItemProperty 'HKCU:\Software\GifMaker\Capabilities\FileAssociations').'.mp4'
+          $p = Start-Process -FilePath "$app\GifMaker.exe" -ArgumentList '--selftest', "$PWD\installed.txt" -Wait -PassThru
+          Get-Content installed.txt
+          if ($p.ExitCode) { exit $p.ExitCode }
+          $p = Start-Process "$app\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES' -Wait -PassThru
+          # The uninstaller hands over to a copy of itself, so wait for it to finish.
+          for ($i = 0; $i -lt 60 -and (Test-Path "$app\GifMaker.exe"); $i++) { Start-Sleep 1 }
+          Start-Sleep 2
+          if (Test-Path 'HKCU:\Software\Classes\GifMaker.Video') { throw "uninstall left the file type behind" }
+          "uninstalled cleanly"
+
       - uses: actions/upload-artifact@v4
         with:
-          name: GifMaker-windows
-          path: dist/GifMaker.exe
+          name: GifMaker-Setup
+          path: dist/GifMaker-Setup.exe
 
-      - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/v')
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GifMaker-portable
+          path: dist/GifMaker
+
+      - name: Publish a release (default branch only)
+        if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/GifMaker.exe
+          tag_name: v${{ env.VERSION }}
+          name: GifMaker ${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          make_latest: "true"
+          body: |
+            ${{ github.event.head_commit.message }}
+
+            **GifMaker-Setup.exe** installs it (and updates an installed copy); **GifMaker-portable.zip** runs without installing.
+          files: |
+            dist/GifMaker-Setup.exe
+            dist/GifMaker-portable.zip

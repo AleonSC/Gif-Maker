@@ -9,18 +9,21 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+import webbrowser
 from operator import itemgetter
 from tkinter import filedialog, font, messagebox, ttk
 
 from . import ffmpeg_tools as ff
 from . import files
 from . import theme
+from . import updater
 from .export_dialog import ANIMATION_DEFAULTS, ExportDialog
 from .grid_player import GridPlayer
 from .rename_tool import RenameTool
 from .player import Player
 from .timeline import Timeline
 from .tooltip import Tooltip
+from .version import __version__
 
 try:  # Drag and drop from Explorer needs the tkdnd extension; run without it if missing.
     from tkinterdnd2 import COPY, DND_FILES, TkinterDnD
@@ -50,7 +53,12 @@ class GifMakerApp:
     def __init__(self, root, ffmpeg):
         self.root = root
         self.ffmpeg = ffmpeg
-        root.title("GifMaker")
+        root.title("GifMaker" if __version__ == "dev" else f"GifMaker {__version__}")
+        try:
+            self.icon = tk.PhotoImage(file=asset("gifmaker.png"))
+            root.iconphoto(True, self.icon)
+        except tk.TclError:
+            pass
         root.protocol("WM_DELETE_WINDOW", self.close)
         self.video_path = None
         self.duration = 0.0
@@ -106,6 +114,9 @@ class GifMakerApp:
         self._sections_changed()
         self._enable_drop()
         self._poll_frame_queue()
+        self.new_release = None  # a newer release, once found
+        if updater.can_update():
+            threading.Thread(target=self._check_for_update, daemon=True).start()
 
     def _setting_var(self, name, default):
         """A BooleanVar that's remembered between runs."""
@@ -170,6 +181,65 @@ class GifMakerApp:
                 self._seek(position)
 
         return reopen
+
+    # ----------------------------------------------------------- updates
+    def _check_for_update(self):
+        try:
+            found = updater.check()
+        except (OSError, ValueError, KeyError):
+            return  # offline, or GitHub is busy: try again next time
+        if found:
+            self.root.after(0, lambda: self._update_found(found))
+
+    def _update_found(self, found):
+        self.new_release = found
+        self.update_btn.config(text=f"Update to {found['version']}")
+        self.update_btn.pack(side="right", padx=(10, 0))
+        Tooltip(self.update_btn, "A newer GifMaker is out: click to install it "
+                                 "(GifMaker restarts)" if updater.is_installed() else
+                                 "A newer GifMaker is out: click to open its download page")
+
+    def install_update(self):
+        """Download the new installer and run it; it replaces and restarts the app."""
+        found = self.new_release
+        if not updater.is_installed() or not found["setup_url"]:
+            webbrowser.open(found["page"])  # a portable copy: download it by hand
+            return
+        if self.busy:
+            self.status.set("Wait for the save to finish (or cancel it) before updating.")
+            return
+        lost = f"\n\nYour {len(self.sections)} section(s) will be lost." if self.sections else ""
+        if not messagebox.askyesno("Update GifMaker",
+                                   f"Download and install GifMaker {found['version']}? It closes "
+                                   f"and opens again when it's done.{lost}"):
+            return
+        self.update_btn.config(state="disabled")
+
+        def progress(frac):
+            self.root.after(0, lambda: self.status.set(f"Downloading the update... {frac:.0%}"))
+
+        def work():
+            try:
+                path = updater.download(found, progress)
+            except OSError as e:
+                self.root.after(0, lambda: self._update_failed(e))
+                return
+            self.root.after(0, lambda: self._run_installer(path))
+
+        self.status.set("Downloading the update...")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _update_failed(self, error):
+        self.update_btn.config(state="normal")
+        self.status.set(f"Couldn't download the update: {error}")
+
+    def _run_installer(self, path):
+        try:
+            updater.install(path)
+        except OSError as e:
+            self._update_failed(e)
+            return
+        self.close()
 
     def close(self):
         # Stop the sound before Tk and Python shut down, or PortAudio can crash on exit.
@@ -364,6 +434,7 @@ class GifMakerApp:
                         variable=self.show_folder).pack(side="right", padx=(10, 0))
         self.cancel_btn = ttk.Button(statusbar, text="Cancel", command=self.cancel)
         self.progress = ttk.Progressbar(statusbar, maximum=1.0, length=160)
+        self.update_btn = ttk.Button(statusbar, command=self.install_update)
         self.status_label = ttk.Label(statusbar, textvariable=self.status, style="Muted.TLabel",
                                       width=1)
         self.status_label.pack(side="left", fill="x", expand=True)
@@ -1267,6 +1338,12 @@ class GifMakerApp:
                             f"({size_mb:.2f} MB in all)")
         if self.show_folder.get():
             show_in_folder(saved[0])
+
+
+def asset(name):
+    """Path of a file in the assets folder (bundled into the exe when built)."""
+    base = getattr(sys, "_MEIPASS", os.path.join(os.path.dirname(__file__), os.pardir))
+    return os.path.join(base, "assets", name)
 
 
 def show_in_folder(path):

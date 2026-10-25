@@ -71,20 +71,34 @@ remembered, and the first time it follows your Windows setting.
 saving** opens Explorer on each file you save. Hover over any control for a hint.
 
 GIFs are made with ffmpeg's two-pass palette method, which gives much better colors than a
-plain conversion. ffmpeg is bundled inside the exe, so there is nothing else to install.
+plain conversion. ffmpeg is bundled with the app, so there is nothing else to install.
 
-## Getting the exe
+## Installing and updating
 
-GitHub Actions builds `GifMaker.exe` on every push (see `.github/workflows/build-windows.yml`):
-open the **Actions** tab, pick the latest *Build Windows exe* run and download the
-`GifMaker-windows` artifact. Pushing a tag like `v1.0` also attaches the exe to a GitHub release.
+Download **GifMaker-Setup.exe** from the latest release
+(https://github.com/AleonSC/Gif-Maker/releases/latest) and run it. It installs for your
+user only (no admin password), adds GifMaker to the Start menu, and registers it with
+Windows as a video player. Windows only asks whether you trust it this once.
 
-Windows SmartScreen may warn the first time you run it because the exe isn't code-signed:
-click *More info → Run anyway*.
+**Making it the default:** tick *Make GifMaker the default for videos* on the installer's
+last page (or open *Settings → Apps → Default apps → GifMaker*) and pick the file types you
+want, e.g. `.mp4` and `.mkv`. You can also right-click any video, choose *Open with →
+Choose another app*, pick GifMaker and tick *Always*. Windows doesn't let apps make
+themselves the default, so this one step is yours.
+
+**Updates:** when a newer version is out, an **Update to 1.0.x** button appears at the bottom
+right. Click it and GifMaker downloads the new installer, updates itself and reopens, with
+your settings kept. Updates it downloads itself don't trigger the "do you trust this" warning.
+
+Every push to the default branch builds a numbered release on GitHub Actions (see
+`.github/workflows/build-windows.yml`); other branches' builds are on the **Actions** tab
+as artifacts. **GifMaker-portable.zip** runs without installing (unzip it and run
+`GifMaker.exe`), but it can't update itself: its update button opens the download page.
 
 ### Building it yourself
 
-On Windows with Python 3.10+ installed, run `build.bat`. The exe ends up at `dist\GifMaker.exe`.
+On Windows with Python 3.10+ installed, run `build.bat`. The app ends up in
+`dist\GifMaker\`, and if Inno Setup 6 is installed, the installer at `dist\GifMaker-Setup.exe`.
 
 ### Running from source
 
