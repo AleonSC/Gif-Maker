@@ -1,6 +1,7 @@
 """GifMaker: pick a section of a video and turn it into a GIF."""
 
 import bisect
+import collections
 import os
 import queue
 import re
@@ -44,6 +45,7 @@ MAX_PLAYBACK_FPS = 30
 PLAY_SPEEDS = (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0)
 MAX_BOOST = 400  # percent
 MAX_THUMBNAILS = 300  # cached keyframes for instant scrubbing (~65 MB at most)
+PREFETCH_KEEP = 8  # pictures loaded ahead for the arrows (each up to a few MB)
 MAX_ZOOM = 16
 ZOOM_STEP = 1.25  # per notch of the mouse wheel
 ZOOM_SETTLE_MS = 90  # re-render the zoomed picture once the wheel or drag pauses this long
@@ -99,6 +101,8 @@ class GifMakerApp:
         self.rename_window = None
         self.view_w, self.view_h = PREVIEW_W, PREVIEW_H  # size of the video area
         self.resize_job = None
+        self.listing = None  # (folder, its modified time, paths, {normcased path: index})
+        self.prefetched = collections.OrderedDict()  # (path, mtime) -> (info, size, ppm)
         self.zoom = None  # (x, y, size) of the part shown, as fractions of the picture
         self.zoom_job = None
         self.pan = None
@@ -733,8 +737,9 @@ class GifMakerApp:
                 f"Opening another video clears your {len(self.sections)} "
                 f"section{'s' if len(self.sections) > 1 else ''}. Open it anyway?"):
             return
+        ready = self._prefetched(path)
         try:
-            info = ff.probe(self.ffmpeg, path)
+            info = ready[0] if ready else ff.probe(self.ffmpeg, path)
         except Exception as e:
             messagebox.showerror("Could not open video", str(e))
             return
@@ -769,37 +774,114 @@ class GifMakerApp:
         self.status.set("")
         self._apply_media_mode()
         self._update_nav()
-        self._seek(0.0)
+        ready = self._prefetched(path) or ready  # now the zoom is reset and the view settled
+        if ready and ready[1]:
+            self.position.set(0.0)
+            self._show_time(0)
+            self._display(tk.PhotoImage(data=ready[1], format="ppm"), 0.0)
+        else:
+            self._seek(0.0)
         if self.autoplay.get() and not self.is_image:
             self._start_playback(0.0, None, clip=False)
+        if self.is_image:
+            self._prefetch_neighbours()
 
     # ------------------------------------------------- folder navigation
     def _folder_videos(self):
-        """Videos in the current video's folder, in Explorer-like (natural) order."""
+        """Videos and pictures in the current one's folder, in Explorer-like (natural)
+        order. Remembered until the folder changes (adding, deleting or renaming a file
+        changes its modified time): listing thousands of files each time was slow."""
         folder = os.path.dirname(os.path.abspath(self.video_path))
         try:
-            names = os.listdir(folder)
+            stamp = os.stat(folder).st_mtime_ns
         except OSError:
             return []
+        cached = self.listing
+        if cached and cached[0] == folder and cached[1] == stamp:
+            return cached[2]
 
         def natural(name):  # "clip 2" before "clip 10"
             return [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", name.lower())]
 
-        names = [n for n in names if os.path.splitext(n)[1].lower() in MEDIA_EXTENSIONS
-                 and os.path.isfile(os.path.join(folder, n))]
-        return [os.path.join(folder, n) for n in sorted(names, key=natural)]
+        try:
+            with os.scandir(folder) as entries:  # file types come with the listing
+                names = [e.name for e in entries
+                         if os.path.splitext(e.name)[1].lower() in MEDIA_EXTENSIONS and e.is_file()]
+        except OSError:
+            return []
+        paths = [os.path.join(folder, n) for n in sorted(names, key=natural)]
+        index = {os.path.normcase(p): i for i, p in enumerate(paths)}
+        self.listing = (folder, stamp, paths, index)
+        return paths
 
     def _neighbour(self, step, files=None):
         """The video `step` places away in the folder (-1 back, 1 next), or None."""
         if not self.video_path:
             return None
         files = self._folder_videos() if files is None else files
-        here = os.path.normcase(os.path.abspath(self.video_path))
-        keys = [os.path.normcase(f) for f in files]
-        if here not in keys:
+        index = self.listing[3] if self.listing and self.listing[2] is files else \
+            {os.path.normcase(f): i for i, f in enumerate(files)}
+        i = index.get(os.path.normcase(os.path.abspath(self.video_path)))
+        if i is None:
             return None
-        i = keys.index(here) + step
+        i += step
         return files[i] if 0 <= i < len(files) else None
+
+    # ---------------------------------------------- pictures ready ahead
+    @staticmethod
+    def _prefetch_key(path):
+        """The file and its modified time, so an edited picture isn't shown stale."""
+        try:
+            return os.path.normcase(os.path.abspath(path)), os.stat(path).st_mtime_ns
+        except OSError:
+            return None
+
+    def _prefetched(self, path):
+        """(info, ppm at the view's size) of a picture loaded ahead, or None.
+        ppm is None if the view has changed size since."""
+        key = self._prefetch_key(path)
+        found = self.prefetched.get(key) if key else None
+        if not found:
+            return None
+        info, size, ppm = found
+        want = ff.fit_size(info.width, info.height, self.view_w, self.view_h, upscale=True)
+        return info, (ppm if size == want and not self.zoom else None)
+
+    def _prefetch_neighbours(self):
+        """Load the next two pictures and the previous one in the background, at the
+        view's size, so the arrows show them at once."""
+        folder = self._folder_videos()
+        view = (self.view_w, self.view_h)
+        for step in (1, -1, 2):
+            path = self._neighbour(step, folder)
+            if not path or not ff.is_image(path):
+                continue
+            key = self._prefetch_key(path)
+            if not key or key in self.prefetched:
+                continue
+            self.prefetched[key] = None  # being loaded
+            threading.Thread(target=self._load_ahead, args=(path, key, view),
+                             daemon=True).start()
+
+    def _load_ahead(self, path, key, view):
+        try:
+            info = ff.probe(self.ffmpeg, path)
+        except Exception:
+            ui_thread.call(lambda: self.prefetched.pop(key, None))
+            return
+        size = ff.fit_size(info.width, info.height, *view, upscale=True)
+        ppm = ff.grab_frame(self.ffmpeg, path, 0, *size, pre_vf=f"scale={size[0]}:{size[1]}")
+
+        def store():
+            if ppm:
+                self.prefetched[key] = (info, size, ppm)
+                self.prefetched.move_to_end(key)
+                while len(self.prefetched) > PREFETCH_KEEP:
+                    self.prefetched.popitem(last=False)
+            else:
+                self.prefetched.pop(key, None)
+
+        ui_thread.call(store)
 
     def _neighbour_tip(self, step):
         path = self._neighbour(step)
