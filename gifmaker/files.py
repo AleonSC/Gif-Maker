@@ -69,40 +69,47 @@ def reveal(paths):
             return True
         except OSError:
             return False
-    import ctypes
     import threading
 
     def work():
-        shell32, ole32 = ctypes.windll.shell32, ctypes.windll.ole32
-        shell32.ILCreateFromPathW.restype = ctypes.c_void_p
-        shell32.ILCreateFromPathW.argtypes = [ctypes.c_wchar_p]
-        shell32.ILFindLastID.restype = ctypes.c_void_p
-        shell32.ILFindLastID.argtypes = [ctypes.c_void_p]
-        shell32.ILFree.argtypes = [ctypes.c_void_p]
-        shell32.SHOpenFolderAndSelectItems.argtypes = [
-            ctypes.c_void_p, ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p), ctypes.c_ulong]
-        ole32.CoInitialize(None)
-        folder = shell32.ILCreateFromPathW(os.path.dirname(paths[0]))
-        items = [shell32.ILCreateFromPathW(p) for p in paths]
-        try:
-            children = [shell32.ILFindLastID(i) for i in items if i]
-            if folder and children:
-                array = (ctypes.c_void_p * len(children))(*children)
-                if shell32.SHOpenFolderAndSelectItems(folder, len(children), array, 0) == 0:
-                    return
+        if _select_in_explorer(paths) != 0:
             # The shell call failed: fall back to Explorer's command line (one file).
             import subprocess
 
             subprocess.Popen(f'explorer /select,"{paths[0]}"')
-        finally:
-            for pidl in items + [folder]:
-                if pidl:
-                    shell32.ILFree(pidl)
-            ole32.CoUninitialize()
 
     # In its own thread: the shell call can take a moment and needs COM set up.
     threading.Thread(target=work, daemon=True).start()
     return True
+
+
+def _select_in_explorer(paths):
+    """SHOpenFolderAndSelectItems for paths (all in one folder). Returns its HRESULT."""
+    import ctypes
+
+    shell32, ole32 = ctypes.windll.shell32, ctypes.windll.ole32
+    shell32.ILCreateFromPathW.restype = ctypes.c_void_p
+    shell32.ILCreateFromPathW.argtypes = [ctypes.c_wchar_p]
+    shell32.ILFindLastID.restype = ctypes.c_void_p
+    shell32.ILFindLastID.argtypes = [ctypes.c_void_p]
+    shell32.ILFree.argtypes = [ctypes.c_void_p]
+    shell32.SHOpenFolderAndSelectItems.restype = ctypes.c_long
+    shell32.SHOpenFolderAndSelectItems.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p), ctypes.c_ulong]
+    ole32.CoInitializeEx(None, 2)  # apartment-threaded, as the shell expects
+    folder = shell32.ILCreateFromPathW(os.path.dirname(paths[0]))
+    items = [shell32.ILCreateFromPathW(p) for p in paths]
+    try:
+        children = [shell32.ILFindLastID(i) for i in items if i]
+        if not folder or not children:
+            return -1
+        array = (ctypes.c_void_p * len(children))(*children)
+        return shell32.SHOpenFolderAndSelectItems(folder, len(children), array, 0)
+    finally:
+        for pidl in items + [folder]:
+            if pidl:
+                shell32.ILFree(pidl)
+        ole32.CoUninitialize()
 
 
 # ------------------------------------------------------------ renaming

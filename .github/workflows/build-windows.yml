@@ -157,14 +157,31 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
         run: |
           $folder = "$PWD\clips"
-          python -c "import sys, time; from gifmaker import files; files.reveal([r'$folder\clip1.mp4', r'$folder\clip2.mp4']); time.sleep(8)"
           $shell = New-Object -ComObject Shell.Application
-          $window = @($shell.Windows() | Where-Object { $_.Document -and $_.Document.Folder.Self.Path -eq $folder })
-          if ($window.Count -eq 0) { "No Explorer window to check on this machine (skipped)"; exit 0 }
-          $selected = @($window[0].Document.SelectedItems() | ForEach-Object { $_.Name })
-          "Selected: $($selected -join ', ')"
-          if (($selected -notcontains 'clip1.mp4') -or ($selected -notcontains 'clip2.mp4')) { throw "the files weren't highlighted" }
-          $window[0].Quit()
+          function Close-Folder { foreach ($w in @($shell.Windows())) { if ($w.Document -and $w.Document.Folder.Self.Path -eq $folder) { $w.Quit() } }; Start-Sleep 2 }
+          function Selected {
+            for ($i = 0; $i -lt 20; $i++) {
+              Start-Sleep -Milliseconds 500
+              $w = @($shell.Windows() | Where-Object { $_.Document -and $_.Document.Folder.Self.Path -eq $folder })
+              if ($w.Count) { $s = @($w[0].Document.SelectedItems() | ForEach-Object { $_.Name }); if ($s.Count) { return ,$s } }
+            }
+            if ($w.Count) { return ,@() } else { return $null }
+          }
+          # For comparison, the old way.
+          Close-Folder
+          Start-Process explorer "/select,`"$folder\clip1.mp4`""
+          $old = Selected
+          "explorer /select: $(if ($old -eq $null) { 'no window' } else { 'selected [' + ($old -join ', ') + ']' })"
+          Close-Folder
+          python -c "from gifmaker import files; print('SHOpenFolderAndSelectItems ->', files._select_in_explorer([r'$folder\clip1.mp4', r'$folder\clip2.mp4']))"
+          $new = Selected
+          "GifMaker's way: $(if ($new -eq $null) { 'no window' } else { 'selected [' + ($new -join ', ') + ']' })"
+          Close-Folder
+          if ($new -eq $null) { "No Explorer window to check on this machine (skipped)"; exit 0 }
+          if (($new -notcontains 'clip1.mp4') -or ($new -notcontains 'clip2.mp4')) {
+            if ($old -ne $null -and $old.Count -eq 0) { "Explorer selects nothing here even the old way: this machine can't show selections (skipped)"; exit 0 }
+            throw "the files weren't highlighted"
+          }
 
       - uses: actions/upload-artifact@v4
         with:
