@@ -547,8 +547,11 @@ def save_frame(ffmpeg, path, seconds, dst, vf=""):
     vf = chain(_trim_video(origin), vf)
     if vf:
         cmd += ["-vf", vf]
-    if os.path.splitext(dst)[1].lower() in (".jpg", ".jpeg"):
-        cmd += ["-q:v", "2"]
+    ext = os.path.splitext(dst)[1].lower()
+    if ext in (".jpg", ".jpeg"):
+        cmd += ["-q:v", "2"]  # high quality
+    elif ext == ".webp":
+        cmd += ["-c:v", "libwebp", "-quality", "92"]
     cmd.append(dst)
     proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
                           creationflags=_NO_WINDOW)

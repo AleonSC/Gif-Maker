@@ -58,7 +58,8 @@ or narrower. Thumbnails are remembered, so a folder you've opened before shows a
 
 Pictures open too (JPG, PNG, BMP, WebP, TIFF): the timeline and video controls step aside,
 the picture fills the window, and **Save copy...** rotates, flips or crops it and saves a
-copy. **‹ ›**, the Files panel, Delete and renaming work with pictures and videos alike.
+copy, or **Replace original** saves the edit over the file itself (the original goes to the
+Recycle Bin, so you can get it back). **‹ ›**, the Files panel, Delete and renaming work with pictures and videos alike.
 
 The **‹** and **›** buttons beside the video (or Page Up / Page Down) open the previous or
 next video in the same folder; tick **Autoplay** (top right) to have each one start playing

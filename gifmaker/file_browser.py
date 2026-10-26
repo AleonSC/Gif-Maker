@@ -135,6 +135,12 @@ class FileBrowser(ttk.Frame):
             self._mark_current()
         self._scroll_to_current()
 
+    def refresh(self, path):
+        """Make path's thumbnail again (the file has changed)."""
+        if path in self.paths:
+            self.images.pop(path, None)
+            self.pool.submit(self._make_thumb, self.token, path)
+
     def _load_thumbs(self):
         """Make the missing thumbnails, nearest the current video first."""
         token = self.token

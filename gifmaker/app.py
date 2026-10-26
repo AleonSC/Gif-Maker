@@ -1204,11 +1204,15 @@ class GifMakerApp:
             self.toggle_fullscreen()
         t = self.position.get()
         ExportDialog(self, "snapshot", self.transform,
-                     lambda transform, *_: self._save_snapshot(t, transform),
-                     time=t)
+                     lambda transform, choice, rendered, options: self._save_snapshot(
+                         t, transform, options.get("replace")),
+                     time=t, replace=self.is_image)
 
-    def _save_snapshot(self, t, transform):
+    def _save_snapshot(self, t, transform, replace=False):
         self.transform = transform
+        if replace:
+            self._replace_picture(transform)
+            return
         base = os.path.splitext(os.path.basename(self.video_path))[0]
         dst = filedialog.asksaveasfilename(
             title="Save snapshot as", defaultextension=".png",
@@ -1234,6 +1238,64 @@ class GifMakerApp:
             self.status.set(f"Saved snapshot {dst}")
             if self.show_folder.get():
                 show_in_folder(dst)
+
+    # ------------------------------------------------- replace a picture
+    def _replace_picture(self, transform):
+        """Save the rotated / cropped picture over the original (which is recycled)."""
+        path = self.video_path
+        name = os.path.basename(path)
+        where = ("The original goes to the Recycle Bin, so you can get it back."
+                 if sys.platform == "win32" else "The original is replaced for good.")
+        if not messagebox.askyesno("Replace original",
+                                   f"Save the edited picture over \u201c{name}\u201d?\n\n{where}"):
+            return
+        folder = os.path.dirname(os.path.abspath(path))
+        stem, ext = os.path.splitext(name)
+        temp = os.path.join(folder, f"{stem}.gifmaker-edit{ext}")
+        vf = ff.transform_filters(**transform)
+        self.status.set(f"Saving {name}...")
+
+        def work():
+            err = ff.save_frame(self.ffmpeg, path, 0, temp, vf)
+            ui_thread.call(lambda: self._picture_saved(err, path, temp))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _picture_saved(self, err, path, temp):
+        if err or not os.path.exists(temp):
+            try:
+                os.remove(temp)
+            except OSError:
+                pass
+            self.status.set("Couldn't save the picture.")
+            messagebox.showerror("Replace original", (err or "Nothing was written.")[-1500:])
+            return
+        self._swap_when_free(path, temp, tries=15)
+
+    def _swap_when_free(self, path, temp, tries):
+        # The original may still be open for a moment (a thumbnail being made, say),
+        # and Windows won't recycle an open file, so retry for a couple of seconds.
+        try:
+            if os.path.exists(path):
+                files.send_to_trash(path)
+            os.replace(temp, path)
+        except OSError as e:
+            if tries > 0:
+                self.root.after(150, lambda: self._swap_when_free(path, temp, tries - 1))
+                return
+            kept = f"\n\nThe edited picture is saved as {os.path.basename(temp)}." \
+                if os.path.exists(temp) else ""
+            messagebox.showerror("Replace original",
+                                 f"Couldn't replace {os.path.basename(path)}: {e}{kept}")
+            self.status.set("The picture wasn't replaced.")
+            return
+        self.transform = dict(NO_TRANSFORM)
+        if self.video_path == path:
+            self.open_video(path)  # show the new version
+        if self.files_shown:
+            self.browser.refresh(path)
+        recycled = " (the original is in the Recycle Bin)" if sys.platform == "win32" else ""
+        self.status.set(f"Replaced {os.path.basename(path)}{recycled}.")
 
     def step(self, delta):
         if self.is_image:

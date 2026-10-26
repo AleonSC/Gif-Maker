@@ -58,7 +58,8 @@ class ExportDialog(tk.Toplevel):
     """
 
     def __init__(self, app, mode, transform, on_save, time=0.0, choices=None, fps=15,
-                 sound=False, options=None, render=None, formats=("GIF",), max_seconds=None):
+                 sound=False, options=None, render=None, formats=("GIF",), max_seconds=None,
+                 replace=False):
         super().__init__(app.root)
         self.app = app
         self.mode = mode
@@ -68,6 +69,7 @@ class ExportDialog(tk.Toplevel):
         self.choice = tk.IntVar(value=0)
         self.section = 0  # which section of the chosen ones the preview is playing
         self.sound = sound
+        self.replace = replace  # offer to save over the original (pictures)
         self.formats, self.render, self.max_seconds = formats, render, max_seconds
         opts = dict(ANIMATION_DEFAULTS, **(options or {}))
         if opts["fmt"] not in formats:
@@ -150,6 +152,12 @@ class ExportDialog(tk.Toplevel):
         ttk.Button(bottom, text="Cancel", command=self.close).pack(side="right")
         self.save_btn = ttk.Button(bottom, command=self._save)
         self.save_btn.pack(side="right", padx=6)
+        if self.replace:
+            replace = ttk.Button(bottom, text="Replace original",
+                                 command=lambda: self._save(replace=True))
+            replace.pack(side="right")
+            Tooltip(replace, "Save the rotated / cropped picture over the original file "
+                             "(the original goes to the Recycle Bin)")
         self._update_labels()
 
     def _build_options(self, main):
@@ -629,8 +637,12 @@ class ExportDialog(tk.Toplevel):
         self.crop = [(x0 - bx) / bw, (y0 - by) / bh, (x1 - x0) / bw, (y1 - y0) / bh]
 
     # ------------------------------------------------------------ finish
-    def _save(self):
+    def _save(self, replace=False):
         transform, choice = self.transform(), self.choice.get()
+        if replace and transform == {"rotate": 0, "flip": False, "crop": FULL}:
+            messagebox.showinfo("Replace original", "Nothing's changed yet: rotate, flip or "
+                                "crop the picture first.", parent=self)
+            return
         if self.mode == "gif" and self.max_seconds:
             longest = max(ff.animation_seconds(s, e, self.speed, self.direction)
                           for s, e in self._sections())
@@ -647,7 +659,7 @@ class ExportDialog(tk.Toplevel):
             messagebox.showerror("Check the options", "FPS must be 1-50, Width 0 or more, "
                                  "Speed 0.1-10 and Colours 2-256.", parent=self)
             return
-        options = dict(self.opts)
+        options = dict(self.opts, replace=replace)
         self.close(remove_temp=False)
         try:
             self.on_save(transform, choice, rendered, options)  # copies `rendered` if it uses it
