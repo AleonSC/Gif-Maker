@@ -44,6 +44,9 @@ MAX_PLAYBACK_FPS = 30
 PLAY_SPEEDS = (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0)
 MAX_BOOST = 400  # percent
 MAX_THUMBNAILS = 300  # cached keyframes for instant scrubbing (~65 MB at most)
+MAX_ZOOM = 16
+ZOOM_STEP = 1.25  # per notch of the mouse wheel
+ZOOM_SETTLE_MS = 90  # re-render the zoomed picture once the wheel or drag pauses this long
 SCRUB_SETTLE_MS = 120  # fetch the exact frame once the slider rests this long
 _VIDEO_PATTERNS = "*.mp4 *.mkv *.mov *.avi *.webm *.wmv *.flv *.m4v *.mpg *.mpeg *.ts *.gif"
 _IMAGE_PATTERNS = " ".join("*" + ext for ext in sorted(ff.IMAGE_EXTENSIONS))
@@ -96,6 +99,9 @@ class GifMakerApp:
         self.rename_window = None
         self.view_w, self.view_h = PREVIEW_W, PREVIEW_H  # size of the video area
         self.resize_job = None
+        self.zoom = None  # (x, y, size) of the part shown, as fractions of the picture
+        self.zoom_job = None
+        self.pan = None
 
         self.player = Player(root, ffmpeg, self._on_play_frame, self._on_play_end)
         self.play_clip = False  # looping the start..end range rather than playing on
@@ -467,11 +473,18 @@ class GifMakerApp:
                                 bg="#111", highlightthickness=0)
         self.canvas.pack(side="left", fill="both", expand=True)
         self.canvas.bind("<Double-Button-1>", self.toggle_fullscreen)
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.canvas.bind(seq, self._wheel_zoom)
+        self.canvas.bind("<ButtonPress-1>", self._pan_start)
+        self.canvas.bind("<B1-Motion>", self._pan)
+        self.canvas.bind("<ButtonRelease-1>", lambda e: setattr(self, "pan", None))
+        self.canvas.bind("<Button-2>", lambda e: self.reset_zoom())
         self.canvas.bind("<Configure>", self._on_view_resize)
         self.canvas_text = self.canvas.create_text(
             PREVIEW_W // 2, PREVIEW_H // 2, fill="#888",
             text="Open a video, or drag and drop one here.")
         self.canvas_img = self.canvas.create_image(PREVIEW_W // 2, PREVIEW_H // 2)
+        self.zoom_text = self.canvas.create_text(10, 8, anchor="nw", fill="#dddddd", text="")
 
         # Timeline across the full width, with the time and fullscreen on the right.
         scrub = self.scrub_bar = ttk.Frame(main)
@@ -726,6 +739,8 @@ class GifMakerApp:
             messagebox.showerror("Could not open video", str(e))
             return
         self.video_path = path
+        self.zoom = None
+        self._zoom_changed()
         self.is_image = ff.is_image(path)
         if self.is_image:
             info = info._replace(duration=0.0, has_audio=False)
@@ -774,11 +789,11 @@ class GifMakerApp:
                  and os.path.isfile(os.path.join(folder, n))]
         return [os.path.join(folder, n) for n in sorted(names, key=natural)]
 
-    def _neighbour(self, step):
+    def _neighbour(self, step, files=None):
         """The video `step` places away in the folder (-1 back, 1 next), or None."""
         if not self.video_path:
             return None
-        files = self._folder_videos()
+        files = self._folder_videos() if files is None else files
         here = os.path.normcase(os.path.abspath(self.video_path))
         keys = [os.path.normcase(f) for f in files]
         if here not in keys:
@@ -803,11 +818,13 @@ class GifMakerApp:
             self.status.set(f"This is the {'last' if step > 0 else 'first'} video in the folder.")
 
     def _update_nav(self):
+        # List the folder once (it can hold thousands of files) for both jobs.
+        folder = self._folder_videos() if self.video_path else []
         for button, step in ((self.back_btn, -1), (self.next_btn, 1)):
-            button.config(state="normal" if self._neighbour(step) else "disabled")
+            button.config(state="normal" if self._neighbour(step, folder) else "disabled")
         if self.files_shown:
             if self.video_path:
-                paths = self._folder_videos()
+                paths = folder
             else:  # closed (or deleted): keep showing the folder, minus what's gone
                 paths = [p for p in self.browser.paths if os.path.exists(p)]
             self.browser.show(paths, self.video_path)
@@ -936,6 +953,71 @@ class GifMakerApp:
             self.player.stop()
             self._start_playback(pos, end, clip)
 
+    # -------------------------------------------------------------- zoom
+    def _zoom_vf(self):
+        """The crop filter for the zoomed-in part (empty when not zoomed)."""
+        if not self.zoom:
+            return ""
+        x, y, size = self.zoom
+        return f"crop=iw*{size:.5f}:ih*{size:.5f}:iw*{x:.5f}:ih*{y:.5f}"
+
+    def _wheel_zoom(self, event):
+        """Zoom in or out around the mouse pointer (it stays on the same spot)."""
+        if not self.video_path:
+            return
+        zoom_in = getattr(event, "num", None) == 4 or getattr(event, "delta", 0) > 0
+        x0, y0, size = self.zoom or (0.0, 0.0, 1.0)
+        new = min(1.0, max(1 / MAX_ZOOM, size / ZOOM_STEP if zoom_in else size * ZOOM_STEP))
+        if new >= 0.999:
+            self.reset_zoom()
+            return
+        # Where the pointer is on the picture, as a fraction of what's shown.
+        fw, fh = self._frame_size()
+        u = min(1.0, max(0.0, (event.x - (self.view_w - fw) / 2) / fw))
+        v = min(1.0, max(0.0, (event.y - (self.view_h - fh) / 2) / fh))
+        px, py = x0 + u * size, y0 + v * size
+        self.zoom = (min(max(0.0, px - u * new), 1 - new), min(max(0.0, py - v * new), 1 - new), new)
+        self._zoom_changed()
+
+    def reset_zoom(self):
+        if self.zoom:
+            self.zoom = None
+            self._zoom_changed()
+
+    def _pan_start(self, event):
+        self.pan = (event.x, event.y, self.zoom) if self.zoom else None
+
+    def _pan(self, event):
+        """Drag the zoomed-in picture around."""
+        if not self.pan or not self.zoom:
+            return
+        x0, y0, (zx, zy, size) = self.pan
+        fw, fh = self._frame_size()
+        x = min(max(0.0, zx - (event.x - x0) / fw * size), 1 - size)
+        y = min(max(0.0, zy - (event.y - y0) / fh * size), 1 - size)
+        self.zoom = (x, y, size)
+        self._zoom_changed()
+
+    def _zoom_changed(self):
+        z = self.zoom
+        self.canvas.itemconfig(self.zoom_text, text=(
+            f"{1 / z[2]:.1f}\u00D7   scroll to zoom \u00B7 drag to move \u00B7 middle-click to reset"
+            if z else ""))
+        self.canvas.config(cursor="fleur" if z else "")
+        if self.zoom_job:
+            self.root.after_cancel(self.zoom_job)
+        self.zoom_job = self.root.after(ZOOM_SETTLE_MS, self._apply_zoom)
+
+    def _apply_zoom(self):
+        self.zoom_job = None
+        if not self.video_path:
+            return
+        if self.playing:
+            self._restart_playback()
+        else:
+            self.shown_t = None
+            self._settle()
+
     def _frame_size(self):
         """Size to decode frames at: as big as fits in the video area."""
         return ff.fit_size(self.video_width, self.video_height, self.view_w, self.view_h,
@@ -952,6 +1034,8 @@ class GifMakerApp:
             self.root.after_cancel(self.settle_job)
             self.settle_job = None
         self.video_path = None
+        self.zoom = None
+        self._zoom_changed()
         self.duration = 0.0
         self.video_fps = 0.0
         self.video_width = self.video_height = 0
@@ -1062,6 +1146,8 @@ class GifMakerApp:
 
     def _show_thumb(self, t):
         """Show the cached keyframe for time t. Returns False if it isn't cached yet."""
+        if self.zoom:
+            return False  # the cached keyframes are the whole picture
         thumbs = self.thumbs
         i = bisect.bisect_right(thumbs, t, key=itemgetter(0)) - 1
         if i < 0 or (not self.thumbs_done and thumbs[-1][0] < t):
@@ -1089,11 +1175,12 @@ class GifMakerApp:
         token, path, t, exact = self.frame_want
         self.frame_want = None
         fw, fh = self._frame_size()
+        zoom_vf = self._zoom_vf()
         self.frame_busy = True
 
         def work():
             data = ff.grab_frame(self.ffmpeg, path, t, fw, fh, fast=not exact,
-                                 pre_vf=f"scale={fw}:{fh}")
+                                 pre_vf=ff.chain(zoom_vf, f"scale={fw}:{fh}"))
             self.frame_queue.put((token, t, data))
 
         threading.Thread(target=work, daemon=True).start()
@@ -1149,7 +1236,7 @@ class GifMakerApp:
         fps = min(self.video_fps, MAX_PLAYBACK_FPS)
         self.player.muted = not self.sound.get()
         self.player.volume, self.player.boost = self.gain_settings()
-        self.player.start(self.video_path, start, size, fps, end=end,
+        self.player.start(self.video_path, start, size, fps, end=end, pre_vf=self._zoom_vf(),
                           speed=self._play_speed(), sound=self.has_audio)
         if self.has_audio and self.player.no_sound_device:
             self.status.set("No sound device found, so playing without sound.")

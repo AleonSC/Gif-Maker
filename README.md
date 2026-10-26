@@ -54,12 +54,18 @@ asking, to the Recycle Bin, and opens the next one in the folder.
 panel beside the player; click one to open it. The slider at the top of the panel (or
 Ctrl + mouse wheel over it) makes the thumbnails bigger or smaller, and the rows refit to
 however many fit across; drag the divider between the video and the panel to make it wider
-or narrower. Thumbnails are remembered, so a folder you've opened before shows at once.
+or narrower. Only the thumbnails in view are drawn and made, so folders of thousands of files open
+at once and don't keep the computer busy; thumbnails are remembered, so they show at
+once next time.
 
 Pictures open too (JPG, PNG, BMP, WebP, TIFF): the timeline and video controls step aside,
 the picture fills the window, and **Save copy...** rotates, flips or crops it and saves a
 copy, or **Replace original** saves the edit over the file itself (the original goes to the
 Recycle Bin, so you can get it back). **‹ ›**, the Files panel, Delete and renaming work with pictures and videos alike.
+
+Scroll the mouse wheel over the video (or GIF, or picture) to zoom in around the pointer;
+drag to move around while zoomed, and middle-click (or zoom back out) to reset. It works
+while playing and in fullscreen, and the picture stays sharp as you zoom.
 
 The **‹** and **›** buttons beside the video (or Page Up / Page Down) open the previous or
 next video in the same folder; tick **Autoplay** (top right) to have each one start playing
