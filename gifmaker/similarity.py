@@ -10,6 +10,7 @@ agree, count as look-alikes: the same video, re-encoded, resized or renamed.
 import json
 import math
 import os
+import time
 
 from . import ffmpeg_tools as ff
 
@@ -269,6 +270,14 @@ def _candidate_pairs(names, sigs):
                                 yield a, b
 
 
+def _could_match(s1, s2):
+    """A quick first check before look_alike(): two pictures can only match if their
+    first frames' shape hashes are close (one machine instruction to compare)."""
+    if s1["duration"] > 1 or s2["duration"] > 1 or not s1["frames"] or not s2["frames"]:
+        return True  # videos: leave it to look_alike()
+    return (s1["frames"][0][1] ^ s2["frames"][0][1]).bit_count() <= SAME_HASH
+
+
 def order(names, sigs, keep_together=True):
     """Sort names by colour. With keep_together, look-alikes are grouped next to each
     other. Returns (ordered names, {name: group number} for groups of 2 or more)."""
@@ -283,8 +292,11 @@ def order(names, sigs, keep_together=True):
         return n
 
     if keep_together:
-        for a, b in _candidate_pairs(readable, sigs):
-            if root(a) != root(b) and look_alike(sigs[a], sigs[b]):
+        for count, (a, b) in enumerate(_candidate_pairs(readable, sigs)):
+            if count % 2000 == 0:
+                time.sleep(0)  # let the window's thread have a turn (this runs in the background)
+            sa, sb = sigs[a], sigs[b]
+            if _could_match(sa, sb) and root(a) != root(b) and look_alike(sa, sb):
                 parent[root(b)] = root(a)
     groups = {}
     for n in readable:

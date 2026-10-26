@@ -38,6 +38,8 @@ class RenameTool(tk.Toplevel):
         self.reading_colors = False
         self.labels = {}  # name -> look-alike group number
         self.order_cache = None  # (what it depends on, ordered names, labels)
+        self.sorting = None  # what a background colour sort under way depends on
+        self.fill_job = None  # the list is filled in batches, so the window keeps responding
         self.refresh_job = None
         self.title("Rename files")
         self.geometry("860x640")
@@ -167,14 +169,16 @@ class RenameTool(tk.Toplevel):
         except OSError as e:
             messagebox.showerror("Couldn't read the folder", str(e), parent=self)
             self.names = []
-        self.refresh()
         if self.order.get() == "Colour":
-            self._read_colors()
+            self._read_colors()  # shows the list itself
+        else:
+            self.refresh()
 
     def _order_changed(self):
         if self.order.get() == "Colour":
-            self._read_colors()
-        self.refresh()
+            self._read_colors()  # shows the list itself
+        else:
+            self.refresh()
 
     # ------------------------------------------------------------ colour
     def _color_key(self, name):
@@ -201,6 +205,9 @@ class RenameTool(tk.Toplevel):
         token, folder, ffmpeg = self.color_token, self.folder, self.app.ffmpeg
         self.reading_colors = True
         self.rename_btn.config(state="disabled")
+        # Fill the list now, before the readers start: while they work, every call to
+        # the window waits its turn behind them.
+        self.refresh()
         done = [0]
 
         def one(name):
@@ -275,9 +282,35 @@ class RenameTool(tk.Toplevel):
         if self.order_cache and self.order_cache[0] == depends:
             self.labels = self.order_cache[2]
             return list(self.order_cache[1])
+        if order == "Colour":  # can take seconds for thousands of files: not in the window
+            self._sort_in_background(depends, together, reverse)
+            self.labels = {}
+            return None
         names = self._compute_order()
         self.order_cache = (depends, list(names), self.labels)
         return names
+
+    def _sort_in_background(self, depends, together, reverse):
+        if self.sorting == depends:
+            return  # already on it
+        self.sorting = depends
+        names = list(self.names)
+        sigs = {n: self._sig(n) for n in names}
+
+        def work():
+            ordered, labels = sim.order(names, sigs, together)
+            if reverse:
+                ordered.reverse()
+            self._from_thread(lambda: self._sorted(depends, ordered, labels))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _sorted(self, depends, ordered, labels):
+        if self.sorting != depends or not self.winfo_exists():
+            return  # something changed meanwhile; a newer sort is coming
+        self.sorting = None
+        self.order_cache = (depends, ordered, labels)
+        self.refresh()
 
     def _compute_order(self):
         order, folder = self.order.get(), self.folder
@@ -302,7 +335,10 @@ class RenameTool(tk.Toplevel):
         return self.prefix.get(), self.separator.get(), max(0, start), DIGITS.get(self.digits.get())
 
     def plan(self):
+        """[(old name, new name)] in the chosen order, or None while it's being worked out."""
         names = self._ordered()
+        if names is None:
+            return None
         return list(zip(names, files.numbered_names(names, *self._settings())))
 
     def refresh(self):
@@ -312,30 +348,53 @@ class RenameTool(tk.Toplevel):
         prefix, separator, start, digits = self._settings()
         example = files.numbered_names(["clip.mp4"] * 2, prefix, separator, start, digits)
         self.example.config(text=f"For example: {example[0]}, {example[1]} ...")
-        self.tree.delete(*self.tree.get_children())
         if not self.folder:
+            self.tree.delete(*self.tree.get_children())
             self.status.set("Choose a folder to start.")
             return
-        plan = self.plan() if not (self.order.get() == "Colour" and self.reading_colors) else \
-            [(n, "") for n in self.names]
-        show_color = self.order.get() == "Colour" and not self.reading_colors
-        for i, (old, new) in enumerate(plan, 1):
-            image = self._swatch(self._sig(old)) if show_color else ""
-            alike = sim.group_label(self.labels[old]) if old in self.labels else ""
-            self.tree.insert("", "end", text=f" {i}", image=image, values=(alike, old, new))
+        busy = self.order.get() == "Colour" and self.reading_colors
+        plan = None if busy else self.plan()
+        sorting = plan is None and not busy
+        if plan is None:  # still reading or sorting: list the files as they are for now
+            plan = [(n, "") for n in self.names]
+        show_color = self.order.get() == "Colour" and not busy and not sorting
+        if not sorting:  # (while sorting, the list stays as it was: see _ordered)
+            self._fill(plan, show_color)
         changes = sum(1 for old, new in plan if new and old != new)
-        if not self.reading_colors:
+        if sorting:
+            self.status.set(f"Sorting {len(plan)} files by colour...")
+        elif not self.reading_colors:
             what = "file" if len(plan) == 1 else "files"
             groups = len(set(self.labels.values()))
             alike = (f" {groups} group{'s' if groups > 1 else ''} of look-alikes."
                      if groups else "")
             self.status.set(f"{len(plan)} {what}; {changes} will be renamed.{alike}" if plan
                             else "No files to rename here.")
-        self.rename_btn.config(state="normal" if changes and not self.reading_colors else "disabled")
+        self.rename_btn.config(state="normal" if changes and not self.reading_colors
+                               and not sorting else "disabled")
+
+    def _fill(self, plan, show_color, start=0, batch=400):
+        """Put the plan in the list, a batch at a time so the window keeps responding."""
+        if start == 0:
+            if self.fill_job:
+                self.after_cancel(self.fill_job)
+            self.tree.delete(*self.tree.get_children())
+        for i in range(start, min(start + batch, len(plan))):
+            old, new = plan[i]
+            image = self._swatch(self._sig(old)) if show_color else ""
+            alike = sim.group_label(self.labels[old]) if old in self.labels else ""
+            self.tree.insert("", "end", text=f" {i + 1}", image=image, values=(alike, old, new))
+        if start + batch < len(plan):
+            self.fill_job = self.after(1, lambda: self._fill(plan, show_color, start + batch))
+        else:
+            self.fill_job = None
 
     # ------------------------------------------------------------- apply
     def apply(self):
-        plan = [(old, new) for old, new in self.plan() if old != new]
+        plan = self.plan()
+        if plan is None:
+            return  # still sorting
+        plan = [(old, new) for old, new in plan if old != new]
         if not plan:
             return
         if not messagebox.askyesno(
@@ -392,5 +451,8 @@ class RenameTool(tk.Toplevel):
 
     def close(self):
         self.color_token += 1  # stops reading colours
+        self.sorting = None
+        if self.fill_job:
+            self.after_cancel(self.fill_job)
         self.app.rename_window = None
         self.destroy()
