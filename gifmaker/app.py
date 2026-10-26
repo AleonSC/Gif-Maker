@@ -59,6 +59,8 @@ VIDEO_EXTENSIONS = {pattern[1:] for pattern in _VIDEO_PATTERNS.split()}
 MEDIA_EXTENSIONS = VIDEO_EXTENSIONS | ff.IMAGE_EXTENSIONS  # what folder browsing shows
 # Keyboard shortcuts are ignored while one of these has focus.
 _NO_SHORTCUT_WIDGETS = (ttk.Entry, tk.Entry, ttk.Combobox, ttk.Spinbox, ttk.Button, ttk.Checkbutton)
+# The arrow keys go between files unless a box is being typed in (a focused button is fine).
+_TYPING_WIDGETS = (ttk.Entry, tk.Entry, ttk.Combobox, ttk.Spinbox)
 
 
 class GifMakerApp:
@@ -517,8 +519,8 @@ class GifMakerApp:
         Tooltip(loop, "Play starts the video again from the beginning when it reaches the end")
         ttk.Frame(bar, width=8).pack(side="left")
         for label, delta, tip in (("-1s", -1, "Back 1 second"),
-                                  ("-1f", "-f", "Back 1 frame  (←)"),
-                                  ("+1f", "+f", "Forward 1 frame  (→)"),
+                                  ("-1f", "-f", "Back 1 frame  (Shift+\u2190)"),
+                                  ("+1f", "+f", "Forward 1 frame  (Shift+\u2192)"),
                                   ("+1s", 1, "Forward 1 second")):
             button = ttk.Button(bar, text=label, width=3, command=lambda d=delta: self.step(d))
             button.pack(side="left", padx=(0, 1))
@@ -624,8 +626,10 @@ class GifMakerApp:
         self._rows = [(w, w.pack_info()) for w in main.pack_slaves()]
 
         self.root.bind("<space>", lambda e: self._key_set(e, self.toggle_play))
-        self.root.bind("<Left>", lambda e: self._key_step(e, "-f"))
-        self.root.bind("<Right>", lambda e: self._key_step(e, "+f"))
+        self.root.bind("<Left>", lambda e: self._key_file(e, -1))
+        self.root.bind("<Right>", lambda e: self._key_file(e, 1))
+        self.root.bind("<Shift-Left>", lambda e: self._key_step(e, "-f"))
+        self.root.bind("<Shift-Right>", lambda e: self._key_step(e, "+f"))
         self.root.bind("<bracketleft>", lambda e: self._key_set(e, self.set_start))
         self.root.bind("<bracketright>", lambda e: self._key_set(e, self.set_end))
         self.root.bind("<Prior>", lambda e: self._key_set(e, lambda: self.open_neighbour(-1)))
@@ -886,7 +890,8 @@ class GifMakerApp:
     def _neighbour_tip(self, step):
         path = self._neighbour(step)
         if path:
-            return f"{'Next' if step > 0 else 'Previous'}: {os.path.basename(path)}  (Page {'Down' if step > 0 else 'Up'})"
+            word, arrow, page = ("Next", "\u2192", "Down") if step > 0 else ("Previous", "\u2190", "Up")
+            return f"{word}: {os.path.basename(path)}  ({arrow} or Page {page})"
         return "No more videos in this folder" if self.video_path else "Open a video first"
 
     def open_neighbour(self, step):
@@ -1487,6 +1492,11 @@ class GifMakerApp:
     def _key_step(self, event, delta):
         if not isinstance(event.widget, _NO_SHORTCUT_WIDGETS):
             self.step(delta)
+
+    def _key_file(self, event, step):
+        if not isinstance(event.widget, _TYPING_WIDGETS):
+            self.open_neighbour(step)
+            return "break"
 
     def _key_set(self, event, fn):
         if not isinstance(event.widget, _NO_SHORTCUT_WIDGETS):

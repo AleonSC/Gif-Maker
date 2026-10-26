@@ -6,7 +6,7 @@ A small Windows desktop app for turning a section of a video into a GIF.
    window, or drop one onto `GifMaker.exe`.
 2. Press **Play** (or the spacebar) to watch it with sound (untick **Sound** to mute; tick
    **Loop** to have it start over at the end), or
-   click and drag on the timeline / use the step buttons / ←→ arrow keys to find the part
+   click and drag on the timeline / use the step buttons / Shift+←→ to find the part
    you want. While you drag, the preview shows quick keyframe thumbnails; the exact frame
    appears as soon as you stop.
 3. Set the clip by dragging the green (start) and red (end) markers on the timeline, with
@@ -67,7 +67,8 @@ Scroll the mouse wheel over the video (or GIF, or picture) to zoom in around the
 drag to move around while zoomed, and middle-click (or zoom back out) to reset. It works
 while playing and in fullscreen, and the picture stays sharp as you zoom.
 
-The **‹** and **›** buttons beside the video (or Page Up / Page Down) open the previous or
+The **‹** and **›** buttons beside the video (or the ← → arrow keys, or Page Up / Page
+Down) open the previous or
 next video in the same folder; tick **Autoplay** (top right) to have each one start playing
 as soon as it opens. With **One window** ticked (the default), videos you open from
 Explorer load into the GifMaker that's already open instead of starting another. Resize the window to make the video bigger or smaller; the picture
