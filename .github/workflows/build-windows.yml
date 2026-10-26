@@ -163,10 +163,11 @@ jobs:
             for ($i = 0; $i -lt 20; $i++) {
               Start-Sleep -Milliseconds 500
               $w = @($shell.Windows() | Where-Object { $_.Document -and $_.Document.Folder.Self.Path -eq $folder })
-              if ($w.Count) { $s = @($w[0].Document.SelectedItems() | ForEach-Object { $_.Name }); if ($s.Count) { return ,$s } }
+              if ($w.Count) { $s = @($w[0].Document.SelectedItems() | ForEach-Object { Split-Path $_.Path -Leaf }); if ($s.Count) { return ,$s } }
             }
             if ($w.Count) { return ,@() } else { return $null }
           }
+          # Selected items are compared by file name (Explorer may hide extensions).
           # For comparison, the old way.
           Close-Folder
           Start-Process explorer "/select,`"$folder\clip1.mp4`""
