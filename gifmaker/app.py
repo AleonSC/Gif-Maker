@@ -47,7 +47,6 @@ MAX_THUMBNAILS = 300  # cached keyframes for instant scrubbing (~65 MB at most)
 SCRUB_SETTLE_MS = 120  # fetch the exact frame once the slider rests this long
 _VIDEO_PATTERNS = "*.mp4 *.mkv *.mov *.avi *.webm *.wmv *.flv *.m4v *.mpg *.mpeg *.ts *.gif"
 _IMAGE_PATTERNS = " ".join("*" + ext for ext in sorted(ff.IMAGE_EXTENSIONS))
-VIDEO_TYPES = [("Video files", _VIDEO_PATTERNS), ("All files", "*.*")]
 OPEN_TYPES = [("Videos and pictures", f"{_VIDEO_PATTERNS} {_IMAGE_PATTERNS}"),
               ("Videos", _VIDEO_PATTERNS), ("Pictures", _IMAGE_PATTERNS), ("All files", "*.*")]
 NO_TRANSFORM = {"rotate": 0, "flip": False, "crop": (0.0, 0.0, 1.0, 1.0)}
@@ -158,7 +157,7 @@ class GifMakerApp:
             self.grid_window.lift()
             return
         self.stop_playback()
-        self.grid_window = GridPlayer(self, VIDEO_TYPES)
+        self.grid_window = GridPlayer(self, OPEN_TYPES)
         if self.video_path:
             self.grid_window.after(100, lambda: self.grid_window and self.grid_window.add(self.video_path))
 
@@ -420,7 +419,8 @@ class GifMakerApp:
         ttk.Separator(top, orient="vertical").pack(side="right", fill="y", padx=10, pady=3)
         grid = ttk.Button(top, text="Grid player", command=self.open_grid)
         grid.pack(side="right")
-        Tooltip(grid, "Play several videos at once, each in a panel you can move, resize and loop")
+        Tooltip(grid, "Play several videos (and show pictures) at once, each in a panel you can "
+                      "move, resize and loop")
         rename = ttk.Button(top, text="Rename files", command=self.open_rename_tool)
         rename.pack(side="right", padx=(0, 4))
         Tooltip(rename, "Rename everything in a folder with a numbered pattern, "

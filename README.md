@@ -67,10 +67,10 @@ Explorer load into the GifMaker that's already open instead of starting another.
 scales to fit. **⛶** next to the time (or F11, or double-clicking the video) shows the video
 fullscreen with the timeline and play bar underneath; Esc goes back.
 
-**Grid player** (top right) opens a window for playing several videos at once. Add them
-with **Add videos...** or by dragging them in from Explorer; drag a video to move it, drag
+**Grid player** (top right) opens a window for playing several videos (and showing pictures) at once. Add them
+with **Add...** or by dragging them in from Explorer; drag a video to move it, drag
 its corner to resize it (the picture re-sharpens to the new size), click it to play or
-pause, and use its green and red markers to loop part of it. **Arrange** tiles them neatly,
+pause, and use its green and red markers to loop part of it. Pictures can go on the grid too (they get just a title bar, and re-sharpen when resized). **Arrange** tiles them neatly,
 and each one has its own sound switch (off to begin with).
 
 **Rename files** (top right) renames everything in a folder with a numbered pattern,

@@ -1,4 +1,5 @@
-"""A window for playing several videos at once, each in a panel you can move and resize."""
+"""A window for showing several videos (and pictures) at once, each in a panel you can move
+and resize."""
 
 import math
 import os
@@ -27,8 +28,9 @@ RESIZE_CURSOR = "size_nw_se" if sys.platform == "win32" else "bottom_right_corne
 
 
 class GridPlayer(tk.Toplevel):
-    """Plays any number of videos side by side. Each panel can be dragged and
-    resized freely, and loops its own section (set with its green/red markers)."""
+    """Plays any number of videos (and shows pictures) side by side. Each panel can be
+    dragged and resized freely, and a video loops its own section (set with its
+    green/red markers)."""
 
     def __init__(self, app, video_types):
         super().__init__(app.root)
@@ -43,7 +45,7 @@ class GridPlayer(tk.Toplevel):
 
         bar = ttk.Frame(self, padding=(8, 6))
         bar.pack(fill="x")
-        ttk.Button(bar, text="Add videos...", command=self.add_videos).pack(side="left")
+        ttk.Button(bar, text="Add...", command=self.add_videos).pack(side="left")
         ttk.Button(bar, text="Arrange", command=self.arrange).pack(side="left", padx=(6, 0))
         ttk.Button(bar, text="▶ Play all", command=lambda: self._all("play")).pack(side="left", padx=(16, 0))
         ttk.Button(bar, text="❚❚ Pause all", command=lambda: self._all("pause")).pack(side="left", padx=4)
@@ -55,7 +57,7 @@ class GridPlayer(tk.Toplevel):
         self.area = tk.Frame(self, bg=DARK)
         self.area.pack(fill="both", expand=True)
         self.hint = tk.Label(self.area, bg=DARK, fg="#888",
-                             text="Add videos, or drag them in from Explorer.")
+                             text="Add videos or pictures, or drag them in from Explorer.")
         self.hint.place(relx=0.5, rely=0.5, anchor="center")
         self._enable_drop(self.area)
         self.protocol("WM_DELETE_WINDOW", self.close)
@@ -63,7 +65,7 @@ class GridPlayer(tk.Toplevel):
     # ------------------------------------------------------------ videos
     def add_videos(self):
         paths = filedialog.askopenfilenames(
-            parent=self, title="Add videos", filetypes=self.video_types,
+            parent=self, title="Add videos or pictures", filetypes=self.video_types,
             initialdir=os.path.dirname(self.app.video_path) if self.app.video_path else None)
         for path in paths:
             self.add(path)
@@ -72,14 +74,15 @@ class GridPlayer(tk.Toplevel):
         try:
             info = ff.probe(self.app.ffmpeg, path)
         except Exception as e:
-            messagebox.showerror("Could not open video", f"{os.path.basename(path)}:\n{e}", parent=self)
+            messagebox.showerror("Could not open it", f"{os.path.basename(path)}:\n{e}", parent=self)
             return
+        chrome = Tile.chrome(path)
         self.update_idletasks()
         area_w, area_h = max(self.area.winfo_width(), 600), max(self.area.winfo_height(), 400)
         # Start a third of the window wide (less for tall videos), keeping the video's shape.
         pic_w, pic_h = ff.fit_size(info.width or 16, info.height or 9,
-                                   area_w // 3, int(area_h * 0.6) - Tile.CHROME, upscale=True)
-        w, h = max(MIN_W, pic_w), max(MIN_H, pic_h + Tile.CHROME)
+                                   area_w // 3, int(area_h * 0.6) - chrome, upscale=True)
+        w, h = max(MIN_W, pic_w), max(MIN_H if chrome == Tile.CHROME else 60, pic_h + chrome)
         if x is None:  # cascade new panels so they don't sit exactly on top of each other
             k = len(self.tiles) % 8
             x, y = 20 + 30 * k, 20 + 30 * k
@@ -151,15 +154,21 @@ class GridPlayer(tk.Toplevel):
 
 
 class Tile(tk.Frame):
-    """One video in the grid: a title bar, the picture, and a loop timeline."""
+    """One video in the grid: a title bar, the picture, and a loop timeline. A still
+    picture gets just the title bar."""
 
     CHROME = 26 + 42  # height of the title bar and timeline around the picture
+
+    @staticmethod
+    def chrome(path):
+        return 26 if ff.is_image(path) else Tile.CHROME
 
     def __init__(self, grid, path, info, x, y, w, h):
         super().__init__(grid.area, bg=MID, highlightthickness=1, highlightbackground="#555")
         self.owner = grid
         self.ffmpeg = grid.app.ffmpeg
         self.path, self.info = path, info
+        self.is_image = ff.is_image(path)
         self.loop_start, self.loop_end = 0.0, info.duration
         self.position = 0.0
         self.sound = False
@@ -175,10 +184,11 @@ class Tile(tk.Frame):
                       relief="flat", bd=0, padx=6, pady=2, highlightthickness=0)
         tk.Button(header, text="✕", command=lambda: grid.remove(self), **button).pack(side="right")
         self.sound_btn = tk.Button(header, text="Sound: off", command=self.toggle_sound, **button)
-        if info.has_audio:
+        if info.has_audio and not self.is_image:
             self.sound_btn.pack(side="right")
         self.play_btn = tk.Button(header, text="▶", width=2, command=self.toggle, **button)
-        self.play_btn.pack(side="left")
+        if not self.is_image:
+            self.play_btn.pack(side="left")
         self.name = tk.Label(header, text=os.path.basename(path), bg=MID, fg=TEXT, anchor="w")
         self.name.pack(side="left", fill="x", expand=True)
         for widget in (header, self.name):
@@ -188,11 +198,13 @@ class Tile(tk.Frame):
 
         # The timeline is packed before the picture so a small panel never squeezes it
         # out, and the picture asks for no space of its own: it takes what's left.
-        self.timeline = Timeline(self, on_seek=self._seek, on_seek_end=self._seek_end,
-                                 on_marker=self._marker)
-        self.timeline.pack(side="bottom", fill="x", padx=(0, 14))  # room for the resize corner
-        self.timeline.set_duration(info.duration)
-        self.timeline.set_range(self.loop_start, self.loop_end)
+        self.timeline = None
+        if not self.is_image:
+            self.timeline = Timeline(self, on_seek=self._seek, on_seek_end=self._seek_end,
+                                     on_marker=self._marker)
+            self.timeline.pack(side="bottom", fill="x", padx=(0, 14))  # room for the resize corner
+            self.timeline.set_duration(info.duration)
+            self.timeline.set_range(self.loop_start, self.loop_end)
         self.canvas = tk.Canvas(self, bg="black", highlightthickness=0, cursor="fleur",
                                 width=10, height=10)
         self.canvas.pack(fill="both", expand=True)
@@ -225,7 +237,7 @@ class Tile(tk.Frame):
         return ff.fit_size(self.info.width, self.info.height, cw, ch, upscale=True)
 
     def play(self, start=None):
-        if self.closed:
+        if self.closed or self.is_image:
             return
         if start is None:  # carry on from the playhead if it's inside the loop
             start = self.position
@@ -256,7 +268,8 @@ class Tile(tk.Frame):
         except tk.TclError:
             pass
         self.position = t
-        self.timeline.set_position(t)
+        if self.timeline:
+            self.timeline.set_position(t)
 
     def _on_end(self):
         self.play(self.loop_start)  # round the loop again
