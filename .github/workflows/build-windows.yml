@@ -151,6 +151,21 @@ jobs:
           Start-Sleep 2
           Start-Process "$app\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES' -Wait
 
+      - name: Check Show in folder highlights the files
+        shell: pwsh
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          $folder = "$PWD\clips"
+          python -c "import sys, time; from gifmaker import files; files.reveal([r'$folder\clip1.mp4', r'$folder\clip2.mp4']); time.sleep(8)"
+          $shell = New-Object -ComObject Shell.Application
+          $window = @($shell.Windows() | Where-Object { $_.Document -and $_.Document.Folder.Self.Path -eq $folder })
+          if ($window.Count -eq 0) { "No Explorer window to check on this machine (skipped)"; exit 0 }
+          $selected = @($window[0].Document.SelectedItems() | ForEach-Object { $_.Name })
+          "Selected: $($selected -join ', ')"
+          if (($selected -notcontains 'clip1.mp4') -or ($selected -notcontains 'clip2.mp4')) { throw "the files weren't highlighted" }
+          $window[0].Quit()
+
       - uses: actions/upload-artifact@v4
         with:
           name: GifMaker-Setup

@@ -1623,7 +1623,7 @@ class GifMakerApp:
             self.status.set(f"Saved {len(saved)} files in {os.path.dirname(saved[0])}  "
                             f"({size_mb:.2f} MB in all)")
         if self.show_folder.get():
-            show_in_folder(saved[0])
+            show_in_folder(*saved)
 
 
 def asset(name):
@@ -1632,16 +1632,9 @@ def asset(name):
     return os.path.join(base, "assets", name)
 
 
-def show_in_folder(path):
-    try:
-        if sys.platform == "win32":
-            subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", "-R", path])
-        else:
-            subprocess.Popen(["xdg-open", os.path.dirname(path)])
-    except OSError:
-        pass
+def show_in_folder(*paths):
+    """Open the folder in Explorer with the saved file(s) highlighted."""
+    files.reveal(paths)
 
 
 def main():

@@ -48,6 +48,63 @@ def send_to_trash(path):
         raise OSError(f"Windows couldn't move it to the Recycle Bin (code {result}).")
 
 
+def reveal(paths):
+    """Open the folder of paths in Explorer with those files selected (highlighted).
+
+    Uses the shell's own SHOpenFolderAndSelectItems, which reuses a window already
+    showing that folder; `explorer /select,` often just opens the folder. All the
+    paths must be in the same folder. Returns False if it couldn't be done.
+    """
+    paths = [os.path.normpath(os.path.abspath(p)) for p in paths if p]
+    if not paths:
+        return False
+    if sys.platform != "win32":
+        import subprocess
+
+        try:
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", paths[0]])
+            else:
+                subprocess.Popen(["xdg-open", os.path.dirname(paths[0])])
+            return True
+        except OSError:
+            return False
+    import ctypes
+    import threading
+
+    def work():
+        shell32, ole32 = ctypes.windll.shell32, ctypes.windll.ole32
+        shell32.ILCreateFromPathW.restype = ctypes.c_void_p
+        shell32.ILCreateFromPathW.argtypes = [ctypes.c_wchar_p]
+        shell32.ILFindLastID.restype = ctypes.c_void_p
+        shell32.ILFindLastID.argtypes = [ctypes.c_void_p]
+        shell32.ILFree.argtypes = [ctypes.c_void_p]
+        shell32.SHOpenFolderAndSelectItems.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p), ctypes.c_ulong]
+        ole32.CoInitialize(None)
+        folder = shell32.ILCreateFromPathW(os.path.dirname(paths[0]))
+        items = [shell32.ILCreateFromPathW(p) for p in paths]
+        try:
+            children = [shell32.ILFindLastID(i) for i in items if i]
+            if folder and children:
+                array = (ctypes.c_void_p * len(children))(*children)
+                if shell32.SHOpenFolderAndSelectItems(folder, len(children), array, 0) == 0:
+                    return
+            # The shell call failed: fall back to Explorer's command line (one file).
+            import subprocess
+
+            subprocess.Popen(f'explorer /select,"{paths[0]}"')
+        finally:
+            for pidl in items + [folder]:
+                if pidl:
+                    shell32.ILFree(pidl)
+            ole32.CoUninitialize()
+
+    # In its own thread: the shell call can take a moment and needs COM set up.
+    threading.Thread(target=work, daemon=True).start()
+    return True
+
+
 # ------------------------------------------------------------ renaming
 SKIP_NAMES = {"desktop.ini", "thumbs.db", ".ds_store"}
 TEMP_PREFIX = ".gifmaker-rename-"
