@@ -16,6 +16,7 @@ from tkinter import font, ttk
 
 from . import ffmpeg_tools as ff
 from . import theme
+from . import ui_thread
 from .tooltip import Tooltip
 
 BASE_W, BASE_H = 320, 180  # thumbnails are made at this size and scaled down
@@ -169,7 +170,7 @@ class FileBrowser(ttk.Frame):
                     pass
         if png:
             try:
-                self.after(0, lambda: self._thumb_ready(token, path, key, png))
+                ui_thread.call(lambda: self._thumb_ready(token, path, key, png))
             except (RuntimeError, tk.TclError):
                 pass  # the window has closed
 
@@ -209,7 +210,7 @@ class FileBrowser(ttk.Frame):
             return
         if proc.returncode == 0 and proc.stdout and token == self.smooth:
             try:
-                self.after(0, lambda: self._smoothed(token, path, proc.stdout))
+                ui_thread.call(lambda: self._smoothed(token, path, proc.stdout))
             except (RuntimeError, tk.TclError):
                 pass
 

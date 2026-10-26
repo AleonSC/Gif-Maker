@@ -10,6 +10,7 @@ from tkinter import filedialog, messagebox, ttk
 from . import files
 from . import similarity as sim
 from . import theme
+from . import ui_thread
 
 ORDERS = ("Name", "Date modified", "Size", "Colour")
 DIGITS = {"None (1, 2 ... 10)": None, "Auto (01 ... 10)": "auto", "2 (01)": 2, "3 (001)": 3,
@@ -200,6 +201,8 @@ class RenameTool(tk.Toplevel):
         done = [0]
 
         def one(name):
+            if token != self.color_token:
+                return  # the window closed (or the folder changed): skip the rest
             key = self._color_key(name)
             sig = sim.fingerprint(ffmpeg, os.path.join(folder, name))
             if key:
@@ -220,7 +223,7 @@ class RenameTool(tk.Toplevel):
 
     def _from_thread(self, fn):
         try:
-            self.after(0, fn)
+            ui_thread.call(fn)
         except (RuntimeError, tk.TclError):
             pass
 

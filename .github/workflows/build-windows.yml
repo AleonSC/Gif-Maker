@@ -117,6 +117,21 @@ jobs:
           $p = Start-Process dist\GifMaker-Setup.exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NOLAUNCH' -Wait -PassThru
           if ($p.ExitCode) { throw "install failed: $($p.ExitCode)" }
           $app = "$env:LOCALAPPDATA\Programs\GifMaker"
+          # Closing must end the process even while it's busy (playing, making
+          # thumbnails): a leftover GifMaker.exe would block the update.
+          New-Item -ItemType Directory -Force clips, "$env:APPDATA\GifMaker" | Out-Null
+          python -c "import imageio_ffmpeg, subprocess; [subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', f'testsrc2=size=640x360:rate=25', '-f', 'lavfi', '-i', 'sine', '-t', '20', '-pix_fmt', 'yuv420p', f'clips/clip{i}.mp4'], check=True) for i in range(12)]"
+          Set-Content "$env:APPDATA\GifMaker\settings.json" '{"files_shown": true, "autoplay": true}'
+          $p = Start-Process "$app\GifMaker.exe" -ArgumentList "`"$PWD\clips\clip3.mp4`"" -PassThru
+          Start-Sleep 8
+          $null = $p.CloseMainWindow()
+          if (-not $p.WaitForExit(10000)) {
+            Get-Content "$env:LOCALAPPDATA\GifMaker\exit.log" -ErrorAction SilentlyContinue
+            throw "GifMaker was still running 10 s after its window closed"
+          }
+          "closed cleanly (exit.log: $((Get-Item "$env:LOCALAPPDATA\GifMaker\exit.log" -ErrorAction SilentlyContinue).Length) bytes)"
+          Remove-Item "$env:APPDATA\GifMaker\settings.json"
+
           $env:GIFMAKER_TEST_UPDATE = "$PWD\dist\GifMaker-Setup-next.exe"
           Start-Process "$app\GifMaker.exe"
           Remove-Item Env:GIFMAKER_TEST_UPDATE

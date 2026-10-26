@@ -7,6 +7,7 @@ from tkinter import filedialog, ttk
 
 from . import downloader
 from . import theme
+from . import ui_thread
 from .tooltip import Tooltip
 
 
@@ -114,7 +115,7 @@ class LinkDialog(tk.Toplevel):
 
         def later(fn):
             try:
-                self.after(0, fn)
+                ui_thread.call(fn)
             except (RuntimeError, tk.TclError):
                 pass
 

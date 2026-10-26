@@ -9,6 +9,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from . import ffmpeg_tools as ff
 from . import theme
+from . import ui_thread
 from .player import Player
 from .timeline import Timeline
 
@@ -278,7 +279,7 @@ class Tile(tk.Frame):
         def work():
             data = ff.grab_frame(ffmpeg, path, t, w, h, fast=not exact, pre_vf=f"scale={w}:{h}")
             try:
-                self.after(0, lambda: self._still_done(data))
+                ui_thread.call(lambda: self._still_done(data))
             except (RuntimeError, tk.TclError):
                 pass
 

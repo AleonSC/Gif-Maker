@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import tkinter as tk
 import webbrowser
@@ -19,6 +20,7 @@ from . import files
 from . import single_instance
 from . import theme
 from . import updater
+from . import ui_thread
 from .export_dialog import ANIMATION_DEFAULTS, ExportDialog
 from .file_browser import FileBrowser
 from .grid_player import GridPlayer
@@ -59,6 +61,7 @@ class GifMakerApp:
     def __init__(self, root, ffmpeg):
         self.root = root
         self.ffmpeg = ffmpeg
+        ui_thread.start(root)  # background work reports back through this
         root.title("GifMaker" if __version__ == "dev" else f"GifMaker {__version__}")
         try:
             self.icon = tk.PhotoImage(file=asset("gifmaker.png"))
@@ -127,7 +130,7 @@ class GifMakerApp:
             root.after(50, lambda: self.toggle_files(True))
         try:  # take videos opened from Explorer while this window is open
             self.listener = single_instance.Listener(
-                lambda path: self.root.after(0, lambda: self._handed_over(path)))
+                lambda path: ui_thread.call(lambda: self._handed_over(path)))
         except OSError:
             self.listener = None
         self.new_release = None  # a newer release, once found
@@ -274,7 +277,7 @@ class GifMakerApp:
         except (OSError, ValueError, KeyError):
             return  # offline, or GitHub is busy: try again next time
         if found:
-            self.root.after(0, lambda: self._update_found(found))
+            ui_thread.call(lambda: self._update_found(found))
 
     def _update_found(self, found):
         self.new_release = found
@@ -301,15 +304,15 @@ class GifMakerApp:
         self.update_btn.config(state="disabled")
 
         def progress(frac):
-            self.root.after(0, lambda: self.status.set(f"Downloading the update... {frac:.0%}"))
+            ui_thread.call(lambda: self.status.set(f"Downloading the update... {frac:.0%}"))
 
         def work():
             try:
                 path = updater.download(found, progress)
             except OSError as e:
-                self.root.after(0, lambda e=e: self._update_failed(e))
+                ui_thread.call(lambda e=e: self._update_failed(e))
                 return
-            self.root.after(0, lambda: self._run_installer(path))
+            ui_thread.call(lambda: self._run_installer(path))
 
         self.status.set("Downloading the update...")
         threading.Thread(target=work, daemon=True).start()
@@ -371,6 +374,8 @@ class GifMakerApp:
         # Stop the sound before Tk and Python shut down, or PortAudio can crash on exit.
         if self.grid_window is not None:
             self.grid_window.close()
+        if self.rename_window is not None:
+            self.rename_window.close()  # stops it reading pictures' colours
         self.player.close()
         self.root.destroy()
 
@@ -1217,7 +1222,7 @@ class GifMakerApp:
 
         def work():
             err = ff.save_frame(self.ffmpeg, path, t, dst, vf)
-            self.root.after(0, lambda: self._snapshot_done(err, dst))
+            ui_thread.call(lambda: self._snapshot_done(err, dst))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -1571,16 +1576,16 @@ class GifMakerApp:
             err = None
             for k, (cmd, seconds, dst) in enumerate(jobs):
                 if n > 1:
-                    self.root.after(0, lambda k=k: self.status.set(f"Saving {k + 1} of {n}..."))
+                    ui_thread.call(lambda k=k: self.status.set(f"Saving {k + 1} of {n}..."))
 
                 def progress(frac, k=k):
-                    self.root.after(0, lambda: self.progress.config(value=(k + frac) / n))
+                    ui_thread.call(lambda: self.progress.config(value=(k + frac) / n))
 
                 err = ff.run_with_progress(cmd, seconds, progress, lambda: self.cancel_requested)
                 if err:
                     break
                 done.append(dst)
-            self.root.after(0, lambda: self._done(err, done, what))
+            ui_thread.call(lambda: self._done(err, done, what))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -1674,6 +1679,26 @@ def main():
         root.after(100, lambda: app.open_video(video))
     root.mainloop()
     app.player.close()
+    _exit_promptly()
+
+
+def _exit_promptly(grace=5):
+    """Make sure the process ends soon after the window closes.
+
+    Background work is told to stop, but if anything still holds the process
+    open (a stuck ffmpeg, say), a lingering GifMaker.exe would block updates and
+    reinstalls. After `grace` seconds, note what was stuck and force the exit.
+    """
+    import faulthandler
+
+    log = os.path.join(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir(),
+                       "GifMaker", "exit.log")
+    try:
+        os.makedirs(os.path.dirname(log), exist_ok=True)
+        f = open(log, "w", encoding="utf-8")  # kept open for the watchdog to write to
+        faulthandler.dump_traceback_later(grace, exit=True, file=f)
+    except (OSError, RuntimeError, ValueError):
+        pass
 
 
 if __name__ == "__main__":

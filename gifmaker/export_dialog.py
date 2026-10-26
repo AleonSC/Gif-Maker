@@ -9,6 +9,7 @@ from tkinter import messagebox, ttk
 
 from . import ffmpeg_tools as ff
 from . import theme
+from . import ui_thread
 from .player import Player
 from .tooltip import Tooltip
 
@@ -443,7 +444,7 @@ class ExportDialog(tk.Toplevel):
     def _from_thread(self, fn):
         """Run fn on the Tk thread, unless the window has gone in the meantime."""
         try:
-            self.after(0, fn)
+            ui_thread.call(fn)
         except (RuntimeError, tk.TclError):
             pass
 
