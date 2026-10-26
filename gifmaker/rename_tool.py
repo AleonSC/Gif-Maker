@@ -37,6 +37,8 @@ class RenameTool(tk.Toplevel):
         self.color_token = 0
         self.reading_colors = False
         self.labels = {}  # name -> look-alike group number
+        self.order_cache = None  # (what it depends on, ordered names, labels)
+        self.refresh_job = None
         self.title("Rename files")
         self.geometry("860x640")
         self.minsize(640, 420)
@@ -52,9 +54,10 @@ class RenameTool(tk.Toplevel):
         self.digits = tk.StringVar(value=list(DIGITS)[0])
         self.status = tk.StringVar()
         self._build()
-        for var in (self.reverse, self.together, self.prefix, self.separator, self.start,
-                    self.digits):
+        for var in (self.reverse, self.together, self.digits):
             var.trace_add("write", lambda *_: self.refresh())
+        for var in (self.prefix, self.separator, self.start):  # typed: wait for a pause
+            var.trace_add("write", lambda *_: self._refresh_soon())
         self.protocol("WM_DELETE_WINDOW", self.close)
         if folder:
             self.load(folder)
@@ -258,7 +261,25 @@ class RenameTool(tk.Toplevel):
         return self.swatches[key]
 
     # ----------------------------------------------------------- preview
+    def _refresh_soon(self):
+        if self.refresh_job:
+            self.after_cancel(self.refresh_job)
+        self.refresh_job = self.after(200, self.refresh)
+
     def _ordered(self):
+        """The files in the chosen order (remembered: working out a colour order with
+        look-alikes takes a while for thousands of files, and the names don't change it)."""
+        order, together, reverse = self.order.get(), self.together.get(), self.reverse.get()
+        depends = (self.folder, tuple(self.names), order, together, reverse,
+                   len(_fingerprints()) if order == "Colour" else 0)
+        if self.order_cache and self.order_cache[0] == depends:
+            self.labels = self.order_cache[2]
+            return list(self.order_cache[1])
+        names = self._compute_order()
+        self.order_cache = (depends, list(names), self.labels)
+        return names
+
+    def _compute_order(self):
         order, folder = self.order.get(), self.folder
         names = list(self.names)
         if order == "Date modified":
@@ -285,6 +306,9 @@ class RenameTool(tk.Toplevel):
         return list(zip(names, files.numbered_names(names, *self._settings())))
 
     def refresh(self):
+        if self.refresh_job:
+            self.after_cancel(self.refresh_job)
+            self.refresh_job = None
         prefix, separator, start, digits = self._settings()
         example = files.numbered_names(["clip.mp4"] * 2, prefix, separator, start, digits)
         self.example.config(text=f"For example: {example[0]}, {example[1]} ...")

@@ -145,10 +145,13 @@ def tone(samples):
 
 def fingerprint(ffmpeg, path):
     """A picture fingerprint for a video or image file, or None if it can't be read."""
-    try:
-        duration = ff.probe(ffmpeg, path).duration
-    except RuntimeError:
-        duration = 0.0  # still images
+    if ff.is_image(path):
+        duration = 0.0  # a still picture: no need to ask ffmpeg how long it is
+    else:
+        try:
+            duration = ff.probe(ffmpeg, path).duration
+        except RuntimeError:
+            duration = 0.0  # still images
     times = [duration * p for p in POINTS] if duration > 1 else [0.0]
     frames = []
     for t in times:
@@ -229,6 +232,43 @@ def color_key(main, colorful=1.0):
     return (0, group, L if group % 2 == 0 else -L)
 
 
+def _candidate_pairs(names, sigs):
+    """Pairs that could be look-alikes, without comparing everything with everything.
+
+    Videos only match ones of about the same length, so they're compared with
+    neighbours in length order. Pictures only match ones whose average colour is
+    within SAME_COLOR (the average of matching cells can't differ by more), so
+    they're put in buckets of that size and compared with the neighbouring ones.
+    """
+    videos = sorted((n for n in names if sigs[n]["duration"] > 1),
+                    key=lambda n: sigs[n]["duration"])
+    for i, a in enumerate(videos):
+        da = sigs[a]["duration"]
+        for b in videos[i + 1:]:
+            db = sigs[b]["duration"]
+            if db - da > max(1.0, SAME_LENGTH * db):
+                break
+            yield a, b
+    buckets = {}
+    for n in names:
+        if sigs[n]["duration"] <= 1:
+            key = tuple(math.floor(v / SAME_COLOR) for v in sigs[n]["mean"])
+            buckets.setdefault(key, []).append(n)
+    for key, members in buckets.items():
+        for i, a in enumerate(members):  # within the bucket
+            for b in members[i + 1:]:
+                yield a, b
+        # and with the neighbouring buckets, each pair once (only "later" neighbours)
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    other = (key[0] + dx, key[1] + dy, key[2] + dz)
+                    if other > key and other in buckets:
+                        for a in members:
+                            for b in buckets[other]:
+                                yield a, b
+
+
 def order(names, sigs, keep_together=True):
     """Sort names by colour. With keep_together, look-alikes are grouped next to each
     other. Returns (ordered names, {name: group number} for groups of 2 or more)."""
@@ -243,16 +283,9 @@ def order(names, sigs, keep_together=True):
         return n
 
     if keep_together:
-        # Only videos of about the same length can match, so compare neighbours by length.
-        by_length = sorted(readable, key=lambda n: sigs[n]["duration"])
-        for i, a in enumerate(by_length):
-            da = sigs[a]["duration"]
-            for b in by_length[i + 1:]:
-                db = sigs[b]["duration"]
-                if da > 1 and db - da > max(1.0, SAME_LENGTH * db):
-                    break
-                if look_alike(sigs[a], sigs[b]):
-                    parent[root(b)] = root(a)
+        for a, b in _candidate_pairs(readable, sigs):
+            if root(a) != root(b) and look_alike(sigs[a], sigs[b]):
+                parent[root(b)] = root(a)
     groups = {}
     for n in readable:
         groups.setdefault(root(n), []).append(n)
