@@ -70,7 +70,11 @@ fullscreen with the timeline and play bar underneath; Esc goes back.
 **Grid player** (top right) opens a window for playing several videos (and showing pictures) at once. Add them
 with **Add...** or by dragging them in from Explorer; drag a video to move it, drag
 its corner to resize it (the picture re-sharpens to the new size), click it to play or
-pause, and use its green and red markers to loop part of it. Pictures can go on the grid too (they get just a title bar, and re-sharpen when resized). **Arrange** tiles them neatly,
+pause, and use its green and red markers to loop part of it. **Save layout...** remembers where the panels are and how big (not what's in them,
+and as a share of the window, so it fits any window size); pick it from **Layout** to put
+the panels back in those spots, and videos you add after that fill its empty spots.
+**Snap to other panels** makes edges snap together (side by side, or lined up) when you drag
+or resize a panel close to another one or to the window's edge. Pictures can go on the grid too (they get just a title bar, and re-sharpen when resized). **Arrange** tiles them neatly,
 and each one has its own sound switch (off to begin with).
 
 **Rename files** (top right) renames everything in a folder with a numbered pattern,

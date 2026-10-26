@@ -6,13 +6,14 @@ import os
 import sys
 import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from . import ffmpeg_tools as ff
 from . import theme
 from . import ui_thread
 from .player import Player
 from .timeline import Timeline
+from .tooltip import Tooltip
 
 try:
     from tkinterdnd2 import COPY, DND_FILES
@@ -21,6 +22,7 @@ except ImportError:
 
 MIN_W, MIN_H = 220, 170  # smallest panel
 SNAP = 20  # grid size when "Snap to grid" is on
+SNAP_DIST = 12  # how close (pixels) an edge must come to another panel's to snap to it
 RESIZE_SETTLE_MS = 150  # re-decode at the new size once resizing pauses this long
 MAX_FPS = 30
 DARK, MID, TEXT = "#202020", "#3a3a3a", "#e8e8e8"
@@ -37,7 +39,10 @@ class GridPlayer(tk.Toplevel):
         self.app = app
         self.video_types = video_types
         self.tiles = []
-        self.snap = tk.BooleanVar(value=False)
+        self.layout = None  # slots [(x, y, w, h) as fractions of the area] new panels fill
+        self.snap = self._setting_var("grid_snap", False)
+        self.snap_panels = self._setting_var("grid_snap_panels", True)
+        self.layout_name = tk.StringVar()
         self.title("Grid player")
         self.geometry("1200x800")
         self.minsize(520, 400)
@@ -51,13 +56,33 @@ class GridPlayer(tk.Toplevel):
         ttk.Button(bar, text="❚❚ Pause all", command=lambda: self._all("pause")).pack(side="left", padx=4)
         ttk.Button(bar, text="Remove all", command=self.remove_all).pack(side="left", padx=(12, 0))
         ttk.Checkbutton(bar, text="Snap to grid", variable=self.snap).pack(side="left", padx=(16, 0))
-        ttk.Label(bar, style="Muted.TLabel", text="Drag to move \u00B7 corner to resize \u00B7 click "
-                  "to play/pause \u00B7 green/red markers set the loop").pack(side="left", padx=(16, 0))
+        panels = ttk.Checkbutton(bar, text="Snap to other panels", variable=self.snap_panels)
+        panels.pack(side="left", padx=(8, 0))
+        Tooltip(panels, "While dragging or resizing, edges snap to nearby panels' edges and "
+                        "the window's (lining up, or side by side)")
+
+        delete = ttk.Button(bar, text="Delete", command=self.delete_layout)
+        delete.pack(side="right")
+        Tooltip(delete, "Forget the chosen layout")
+        save = ttk.Button(bar, text="Save layout...", command=self.save_layout)
+        save.pack(side="right", padx=(4, 4))
+        Tooltip(save, "Remember where the panels are and how big (not what's in them), "
+                      "to use again with any videos")
+        self.layout_box = ttk.Combobox(bar, textvariable=self.layout_name, state="readonly",
+                                       width=16)
+        self.layout_box.pack(side="right")
+        self.layout_box.bind("<<ComboboxSelected>>", lambda e: self.apply_layout())
+        Tooltip(self.layout_box, "Put the panels in a saved layout (videos added after "
+                                 "that fill its empty spots)")
+        ttk.Label(bar, text="Layout").pack(side="right", padx=(16, 4))
+        self._refresh_layouts()
 
         self.area = tk.Frame(self, bg=DARK)
         self.area.pack(fill="both", expand=True)
-        self.hint = tk.Label(self.area, bg=DARK, fg="#888",
-                             text="Add videos or pictures, or drag them in from Explorer.")
+        self.hint = tk.Label(self.area, bg=DARK, fg="#888", justify="center",
+                             text="Add videos or pictures, or drag them in from Explorer.\n\n"
+                                  "Drag a panel to move it, its corner to resize it; click a video "
+                                  "to play or pause it, and its green and red markers set its loop.")
         self.hint.place(relx=0.5, rely=0.5, anchor="center")
         self._enable_drop(self.area)
         self.protocol("WM_DELETE_WINDOW", self.close)
@@ -83,7 +108,11 @@ class GridPlayer(tk.Toplevel):
         pic_w, pic_h = ff.fit_size(info.width or 16, info.height or 9,
                                    area_w // 3, int(area_h * 0.6) - chrome, upscale=True)
         w, h = max(MIN_W, pic_w), max(MIN_H if chrome == Tile.CHROME else 60, pic_h + chrome)
-        if x is None:  # cascade new panels so they don't sit exactly on top of each other
+        slot = self.layout[len(self.tiles)] if x is None and self.layout and \
+            len(self.tiles) < len(self.layout) else None
+        if slot:  # the next empty spot in the chosen layout
+            x, y, w, h = self._slot_rect(slot, area_w, area_h)
+        elif x is None:  # cascade new panels so they don't sit exactly on top of each other
             k = len(self.tiles) % 8
             x, y = 20 + 30 * k, 20 + 30 * k
         x, y = min(max(0, x), area_w - 60), min(max(0, y), area_h - 40)
@@ -104,6 +133,8 @@ class GridPlayer(tk.Toplevel):
 
     def arrange(self):
         """Tile the videos in a neat grid that fills the window."""
+        self.layout = None
+        self.layout_name.set("")
         n = len(self.tiles)
         if not n:
             return
@@ -124,6 +155,106 @@ class GridPlayer(tk.Toplevel):
 
     def _snapped(self, value):
         return round(value / SNAP) * SNAP if self.snap.get() else value
+
+    def snap_to_panels(self, tile, x, y, w, h, resizing):
+        """Nudge a panel being moved (or resized) so edges that come within SNAP_DIST of
+        another panel's edges, or the window's, line up exactly. Returns (x, y, w, h)."""
+        if not self.snap_panels.get():
+            return x, y, w, h
+        area_w, area_h = self.area.winfo_width(), self.area.winfo_height()
+        others = [(t.winfo_x(), t.winfo_y(), t.winfo_width(), t.winfo_height())
+                  for t in self.tiles if t is not tile]
+
+        def best(edges, targets):
+            moves = [t - e for e in edges for t in targets if abs(t - e) <= SNAP_DIST]
+            return min(moves, key=abs) if moves else 0
+
+        # Only panels beside us (overlapping, or nearly, on the other axis) count.
+        xs = [0, area_w] + [v for ox, oy, ow, oh in others
+                            if oy - SNAP_DIST < y + h and y < oy + oh + SNAP_DIST
+                            for v in (ox, ox + ow)]
+        ys = [0, area_h] + [v for ox, oy, ow, oh in others
+                            if ox - SNAP_DIST < x + w and x < ox + ow + SNAP_DIST
+                            for v in (oy, oy + oh)]
+        if resizing:  # only the right and bottom edges move
+            dx, dy = best([x + w], xs), best([y + h], ys)
+            return x, y, max(MIN_W, w + dx), max(self._min_h(tile), h + dy)
+        return x + best([x, x + w], xs), y + best([y, y + h], ys), w, h
+
+    @staticmethod
+    def _min_h(tile):
+        return 60 if tile.is_image else MIN_H
+
+    # ----------------------------------------------------------- layouts
+    @staticmethod
+    def _setting_var(name, default):
+        var = tk.BooleanVar(value=bool(theme.load_setting(name, default)))
+        var.trace_add("write", lambda *_: theme.save_setting(name, var.get()))
+        return var
+
+    @staticmethod
+    def _layouts():
+        saved = theme.load_setting("grid_layouts", {})
+        return saved if isinstance(saved, dict) else {}
+
+    def _refresh_layouts(self):
+        self.layout_box.config(values=sorted(self._layouts(), key=str.lower))
+
+    def _slot_rect(self, slot, area_w, area_h):
+        fx, fy, fw, fh = slot
+        return (round(fx * area_w), round(fy * area_h),
+                max(MIN_W, round(fw * area_w)), max(60, round(fh * area_h)))
+
+    def save_layout(self):
+        if not self.tiles:
+            messagebox.showinfo("Save layout", "Add some videos or pictures and arrange them "
+                                               "first.", parent=self)
+            return
+        name = simpledialog.askstring("Save layout", "Name for this layout:", parent=self,
+                                      initialvalue=self.layout_name.get() or
+                                      f"{len(self.tiles)} panels")
+        name = (name or "").strip()
+        if not name:
+            return
+        layouts = self._layouts()
+        if name in layouts and not messagebox.askyesno(
+                "Save layout", f"Replace the layout “{name}”?", parent=self):
+            return
+        area_w, area_h = max(1, self.area.winfo_width()), max(1, self.area.winfo_height())
+        layouts[name] = [[t.winfo_x() / area_w, t.winfo_y() / area_h,
+                          t.winfo_width() / area_w, t.winfo_height() / area_h] for t in self.tiles]
+        theme.save_setting("grid_layouts", layouts)
+        self._refresh_layouts()
+        self.layout_name.set(name)
+        self.layout = layouts[name]
+
+    def apply_layout(self):
+        """Put the panels in the chosen layout's spots, in the order they were added."""
+        slots = self._layouts().get(self.layout_name.get())
+        if not slots:
+            return
+        self.layout = slots
+        area_w, area_h = self.area.winfo_width(), self.area.winfo_height()
+        for tile, slot in zip(self.tiles, slots):
+            tile.set_geometry(*self._slot_rect(slot, area_w, area_h))
+            tile.lift()
+        extra = len(self.tiles) - len(slots)
+        if extra > 0:
+            self.app.status.set(f"The layout has {len(slots)} spots, so {extra} panel"
+                                f"{'s stay' if extra > 1 else ' stays'} where "
+                                f"{'they were' if extra > 1 else 'it was'}.")
+
+    def delete_layout(self):
+        name = self.layout_name.get()
+        if not name or not messagebox.askyesno("Delete layout", f"Forget the layout “{name}”?",
+                                               parent=self):
+            return
+        layouts = self._layouts()
+        layouts.pop(name, None)
+        theme.save_setting("grid_layouts", layouts)
+        self.layout_name.set("")
+        self.layout = None
+        self._refresh_layouts()
 
     # ------------------------------------------------------- drag & drop
     def _enable_drop(self, widget):
@@ -358,7 +489,9 @@ class Tile(tk.Frame):
         x = min(max(-self.winfo_width() + 60, wx + dx), area.winfo_width() - 60)
         y = min(max(0, wy + dy), area.winfo_height() - 30)
         snap = self.owner._snapped
-        self.place_configure(x=snap(x), y=snap(y))
+        x, y, _, _ = self.owner.snap_to_panels(self, snap(x), snap(y), self.winfo_width(),
+                                               self.winfo_height(), resizing=False)
+        self.place_configure(x=x, y=y)
 
     def _move_end(self, _event):
         self.drag = None
@@ -379,7 +512,9 @@ class Tile(tk.Frame):
         x0, y0, w0, h0, _ = self.drag
         snap = self.owner._snapped
         w = max(MIN_W, snap(w0 + event.x_root - x0))
-        h = max(MIN_H, snap(h0 + event.y_root - y0))
+        h = max(self.owner._min_h(self), snap(h0 + event.y_root - y0))
+        _, _, w, h = self.owner.snap_to_panels(self, self.winfo_x(), self.winfo_y(), w, h,
+                                               resizing=True)
         self.place_configure(width=w, height=h)
         if self.resize_job:
             self.after_cancel(self.resize_job)
