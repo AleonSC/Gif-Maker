@@ -17,6 +17,12 @@ DIGITS = {"None (1, 2 ... 10)": None, "Auto (01 ... 10)": "auto", "2 (01)": 2, "
           "4 (0001)": 4}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 _sigs = None  # file identity -> picture fingerprint; loaded from disk when first needed
+MAX_SWATCHES = 400  # different swatch pictures at most (see RenameTool._swatch)
+
+
+def _coarse(rgb):
+    """Round a colour to one of 6 x 6 x 6 shades (plenty for a 10-pixel swatch)."""
+    return tuple(min(255, round(c / 51) * 51) for c in rgb)
 
 
 def _fingerprints():
@@ -247,17 +253,25 @@ class RenameTool(tk.Toplevel):
         self.refresh()
 
     def _swatch(self, sig):
-        """The main colour on the left, then the picture's palette in proportion."""
+        """The main colour on the left, then the picture's palette in proportion.
+
+        Colours are rounded, and there are at most MAX_SWATCHES different pictures
+        (then just the main colour): Windows allows a program only about 10,000
+        graphics objects, and a swatch for each of 13,000 files ran out of them.
+        """
         if not sig:
             key = None
         else:
-            key = (sim.swatch_rgb(sig),
-                   tuple((round(share, 2), sim.to_rgb(color)) for share, color in sig["palette"]))
+            main = _coarse(sim.swatch_rgb(sig))
+            key = (main, tuple((round(share * 4) / 4, _coarse(sim.to_rgb(color)))
+                               for share, color in sig["palette"]))
+            if key not in self.swatches and len(self.swatches) >= MAX_SWATCHES:
+                key = (main, ())  # just the main colour: at most 216 of these
         if key not in self.swatches:
             image = tk.PhotoImage(master=self, width=34, height=12)
             if key:
                 hex_color = lambda rgb: "#%02x%02x%02x" % rgb
-                image.put(hex_color(key[0]), to=(0, 0, 10, 12))
+                image.put(hex_color(key[0]), to=(0, 0, 10 if key[1] else 34, 12))
                 x, total = 12, sum(share for share, _ in key[1]) or 1
                 for i, (share, rgb) in enumerate(key[1]):
                     x2 = 34 if i == len(key[1]) - 1 else min(34, x + max(1, round(22 * share / total)))

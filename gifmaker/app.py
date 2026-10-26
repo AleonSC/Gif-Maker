@@ -1722,6 +1722,7 @@ def main():
             root = None
     if root is None:
         root = tk.Tk()
+    _log_crashes(root)
     theme.apply(root, theme.load_dark_setting())
     try:
         ffmpeg = ff.find_ffmpeg()
@@ -1735,6 +1736,49 @@ def main():
     root.mainloop()
     app.player.close()
     _exit_promptly()
+
+
+def _crash_log_path():
+    return os.path.join(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir(),
+                        "GifMaker", "crash.log")
+
+
+def _log_crashes(root):
+    """Write what went wrong to crash.log, instead of the app just vanishing.
+
+    Hard crashes (in Tk or ffmpeg's libraries) get a traceback of every thread;
+    errors in the app's own code are logged too, and the first one is shown.
+    """
+    import faulthandler
+    import traceback
+
+    path = _crash_log_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        log = open(path, "a", encoding="utf-8", buffering=1)  # kept open for faulthandler
+        faulthandler.enable(file=log, all_threads=True)
+    except (OSError, RuntimeError, ValueError):
+        return
+    shown = []
+
+    def record(kind, exc_type, exc, tb):
+        import datetime
+
+        log.write(f"\n--- {datetime.datetime.now():%Y-%m-%d %H:%M:%S} {kind} "
+                  f"(GifMaker {__version__}) ---\n")
+        log.write("".join(traceback.format_exception(exc_type, exc, tb)))
+        log.flush()
+
+    def tk_error(exc_type, exc, tb):
+        record("error", exc_type, exc, tb)
+        if not shown:  # once is enough to know something's wrong
+            shown.append(True)
+            messagebox.showerror("GifMaker", f"Something went wrong: {exc}\n\nThe details are "
+                                             f"in {path}")
+
+    root.report_callback_exception = tk_error
+    threading.excepthook = lambda a: record(f"error in {a.thread.name if a.thread else 'thread'}",
+                                            a.exc_type, a.exc_value, a.exc_traceback)
 
 
 def _exit_promptly(grace=5):

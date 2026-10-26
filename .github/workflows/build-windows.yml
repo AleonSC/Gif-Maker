@@ -75,6 +75,23 @@ jobs:
           Get-Content selftest.txt
           exit $p.ExitCode
 
+      - name: Stress test the Rename tool with 13,000 files
+        shell: pwsh
+        run: |
+          # First the old way (a swatch picture per file), just to see if Windows copes;
+          # then as GifMaker does it now, which must pass.
+          $env:APPDATA = "$PWD\stress-old"; $env:LOCALAPPDATA = "$PWD\stress-old"
+          $old = Start-Process python -ArgumentList 'tools\stress_rename.py', "$PWD\stress-files", '13000', '100000' -Wait -PassThru -NoNewWindow
+          "Old way (unlimited swatches) exit code: $($old.ExitCode)"
+          if (Test-Path stress-old\GifMaker\crash.log) { Get-Content stress-old\GifMaker\crash.log | Select-Object -First 15 }
+          $env:APPDATA = "$PWD\stress-new"; $env:LOCALAPPDATA = "$PWD\stress-new"
+          $out = python tools\stress_rename.py "$PWD\stress-files" 13000
+          $out
+          if (-not ($out -match 'passed')) {
+            if (Test-Path stress-new\GifMaker\crash.log) { Get-Content stress-new\GifMaker\crash.log }
+            throw "the Rename tool didn't survive 13,000 files"
+          }
+
       - name: Build the installer
         shell: pwsh
         run: |
