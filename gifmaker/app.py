@@ -801,7 +801,11 @@ class GifMakerApp:
         for button, step in ((self.back_btn, -1), (self.next_btn, 1)):
             button.config(state="normal" if self._neighbour(step) else "disabled")
         if self.files_shown:
-            self.browser.show(self._folder_videos() if self.video_path else [], self.video_path)
+            if self.video_path:
+                paths = self._folder_videos()
+            else:  # closed (or deleted): keep showing the folder, minus what's gone
+                paths = [p for p in self.browser.paths if os.path.exists(p)]
+            self.browser.show(paths, self.video_path)
 
     # ------------------------------------------------------- files panel
     def toggle_files(self, show=None):

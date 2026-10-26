@@ -123,8 +123,11 @@ class FileBrowser(ttk.Frame):
         folder = os.path.dirname(current or (paths[0] if paths else "")) if (current or paths) else ""
         self.title.config(text=os.path.basename(folder) or folder or "No folder")
         if changed:
+            # Thumbnails already made are kept (a deleted or added file shouldn't
+            # make the rest blank while they're redone); only missing ones are made.
             self.token += 1
-            self.images = {p: img for p, img in self.images.items() if p in set(paths)}
+            keep = set(paths)
+            self.images = {p: img for p, img in self.images.items() if p in keep}
             self._layout()
             self._load_thumbs()
         else:
