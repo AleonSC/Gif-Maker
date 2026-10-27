@@ -69,8 +69,9 @@ whether it starts over at the end. The arrows still work while it runs; F5 or Es
 Pair it with fullscreen (F11).
 
 Scroll the mouse wheel over the video (or GIF, or picture) to zoom in around the pointer;
-drag to move around while zoomed, and middle-click (or zoom back out) to reset. It works
-while playing and in fullscreen, and the picture stays sharp as you zoom.
+drag to move around while zoomed, and middle-click (or zoom back out) to reset. Once
+zoomed in, the picture fills the whole video area whatever its shape. Each step shows at
+once and sharpens a moment later. It works while playing and in fullscreen.
 
 The **‹** and **›** buttons beside the video (or the ← → arrow keys, or Page Up / Page
 Down) open the previous or

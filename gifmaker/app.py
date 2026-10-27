@@ -50,7 +50,7 @@ MAX_THUMBNAILS = 300  # cached keyframes for instant scrubbing (~65 MB at most)
 SLIDE_SECONDS = (2, 3, 5, 10, 20, 30, 60)  # slideshow intervals offered
 LISTING_MAX_AGE = 5  # seconds a folder listing is trusted for (see _folder_videos)
 PREFETCH_KEEP = 8  # pictures loaded ahead for the arrows (each up to a few MB)
-MAX_ZOOM = 16
+MAX_ZOOM = 16  # times bigger than fitting the view
 ZOOM_STEP = 1.25  # per notch of the mouse wheel
 ZOOM_SETTLE_MS = 90  # re-render the zoomed picture once the wheel or drag pauses this long
 SCRUB_SETTLE_MS = 120  # fetch the exact frame once the slider rests this long
@@ -116,13 +116,16 @@ class GifMakerApp:
         self.slide_videos = self._setting_var("slide_videos", True)
         self.slide_shuffle = self._setting_var("slide_shuffle", False)
         self.slide_loop = self._setting_var("slide_loop", True)
-        self.zoom = None  # (x, y, size) of the part shown, as fractions of the picture
+        self.zoom = None  # (x, y, magnification): see _region()
         self.zoom_job = None
         self.pan = None
 
         self.player = Player(root, ffmpeg, self._on_play_frame, self._on_play_end)
         self.play_clip = False  # looping the start..end range rather than playing on
         self.play_image = None
+        self.play_shown = None
+        self.play_region = None
+        self.raw_image, self.raw_region = None, None  # the still frame as decoded, and its part
 
         self.position = tk.DoubleVar(value=0.0)
         self.start_text = tk.StringVar(value="0:00.000")
@@ -1174,29 +1177,52 @@ class GifMakerApp:
             self._start_playback(pos, end, clip)
 
     # -------------------------------------------------------------- zoom
+    # The zoom is (x, y, magnification): the top-left of the part shown, in the
+    # picture's own pixels, and how much bigger than "fit to the view" it is. Once
+    # zoomed in, the part shown has the view's shape, so it fills the whole area.
+    # Each wheel step or drag first crops and enlarges the picture already on screen
+    # (instant, if a bit soft), then ffmpeg renders the part sharply once it settles.
+    def _region(self, zoom="current"):
+        """((x, y, w, h) of the picture shown, in its pixels, (width, height) on screen)."""
+        zoom = self.zoom if zoom == "current" else zoom
+        src_w, src_h = max(2, self.video_width or 2), max(2, self.video_height or 2)
+        fit = min(self.view_w / src_w, self.view_h / src_h)
+        scale = fit * (zoom[2] if zoom else 1.0)
+        w, h = min(src_w, self.view_w / scale), min(src_h, self.view_h / scale)
+        x = min(max(0.0, zoom[0] if zoom else 0.0), src_w - w)
+        y = min(max(0.0, zoom[1] if zoom else 0.0), src_h - h)
+        size = (max(2, int(w * scale) // 2 * 2), max(2, int(h * scale) // 2 * 2))
+        return (x, y, w, h), size
+
     def _zoom_vf(self):
         """The crop filter for the zoomed-in part (empty when not zoomed)."""
         if not self.zoom:
             return ""
-        x, y, size = self.zoom
-        return f"crop=iw*{size:.5f}:ih*{size:.5f}:iw*{x:.5f}:ih*{y:.5f}"
+        x, y, w, h = self._region()[0]
+        return f"crop={max(2, round(w))}:{max(2, round(h))}:{round(x)}:{round(y)}"
 
     def _wheel_zoom(self, event):
         """Zoom in or out around the mouse pointer (it stays on the same spot)."""
         if not self.video_path:
             return
         zoom_in = getattr(event, "num", None) == 4 or getattr(event, "delta", 0) > 0
-        x0, y0, size = self.zoom or (0.0, 0.0, 1.0)
-        new = min(1.0, max(1 / MAX_ZOOM, size / ZOOM_STEP if zoom_in else size * ZOOM_STEP))
-        if new >= 0.999:
+        mag = self.zoom[2] if self.zoom else 1.0
+        new = min(MAX_ZOOM, mag * ZOOM_STEP if zoom_in else mag / ZOOM_STEP)
+        if new <= 1.001:
             self.reset_zoom()
             return
-        # Where the pointer is on the picture, as a fraction of what's shown.
-        fw, fh = self._frame_size()
-        u = min(1.0, max(0.0, (event.x - (self.view_w - fw) / 2) / fw))
-        v = min(1.0, max(0.0, (event.y - (self.view_h - fh) / 2) / fh))
-        px, py = x0 + u * size, y0 + v * size
-        self.zoom = (min(max(0.0, px - u * new), 1 - new), min(max(0.0, py - v * new), 1 - new), new)
+        # The picture pixel under the pointer now...
+        (x, y, w, h), (ow, oh) = self._region()
+        scale = ow / w
+        px = x + min(max(0.0, event.x - (self.view_w - ow) / 2), ow) / scale
+        py = y + min(max(0.0, event.y - (self.view_h - oh) / 2), oh) / scale
+        # ...stays under it at the new size.
+        (_, _, w2, h2), (ow2, oh2) = self._region((0, 0, new))
+        scale2 = ow2 / w2
+        zoom = (px - (event.x - (self.view_w - ow2) / 2) / scale2,
+                py - (event.y - (self.view_h - oh2) / 2) / scale2, new)
+        (x2, y2, _, _), _ = self._region(zoom)
+        self.zoom = (x2, y2, new)
         self._zoom_changed()
 
     def reset_zoom(self):
@@ -1211,37 +1237,71 @@ class GifMakerApp:
         """Drag the zoomed-in picture around."""
         if not self.pan or not self.zoom:
             return
-        x0, y0, (zx, zy, size) = self.pan
-        fw, fh = self._frame_size()
-        x = min(max(0.0, zx - (event.x - x0) / fw * size), 1 - size)
-        y = min(max(0.0, zy - (event.y - y0) / fh * size), 1 - size)
-        self.zoom = (x, y, size)
+        x0, y0, (zx, zy, mag) = self.pan
+        (_, _, w, _), (ow, _) = self._region()
+        scale = ow / w
+        (x, y, _, _), _ = self._region((zx - (event.x - x0) / scale, zy - (event.y - y0) / scale, mag))
+        self.zoom = (x, y, mag)
         self._zoom_changed()
 
     def _zoom_changed(self):
         z = self.zoom
         self.canvas.itemconfig(self.zoom_text, text=(
-            f"{1 / z[2]:.1f}\u00D7   scroll to zoom \u00B7 drag to move \u00B7 middle-click to reset"
+            f"{z[2]:.1f}\u00D7   scroll to zoom \u00B7 drag to move \u00B7 middle-click to reset"
             if z else ""))
         self.canvas.config(cursor="fleur" if z else "")
+        if not self.playing and self.raw_image is not None:  # the instant version
+            shown = self._fitted(self.raw_image, self.raw_region)
+            if shown is not None:
+                self._display(shown, self.shown_t, keep_raw=True)
         if self.zoom_job:
             self.root.after_cancel(self.zoom_job)
         self.zoom_job = self.root.after(ZOOM_SETTLE_MS, self._apply_zoom)
 
     def _apply_zoom(self):
+        """The zoom has settled: render it sharply."""
         self.zoom_job = None
         if not self.video_path:
             return
         if self.playing:
             self._restart_playback()
         else:
-            self.shown_t = None
-            self._settle()
+            t = self.shown_t if self.shown_t is not None else self.position.get()
+            self._request_frame(t, exact=True)
+
+    def _fitted(self, image, region):
+        """image (showing region of the picture) cropped and scaled to show the zoom's
+        region, quickly (Tk picks pixels). None if it can't be done from this image."""
+        target, (ow, oh) = self._region()
+        if region is None:
+            return None
+        if all(abs(a - b) < 0.5 for a, b in zip(region, target)) and \
+                (image.width(), image.height()) == (ow, oh):
+            return image
+        sx, sy, sw, sh = region
+        tx, ty, tw, th = target
+        kx, ky = image.width() / sw, image.height() / sh  # image pixels per picture pixel
+        x1, y1 = max(0, int((tx - sx) * kx)), max(0, int((ty - sy) * ky))
+        x2 = min(image.width(), int(round((tx + tw - sx) * kx)))
+        y2 = min(image.height(), int(round((ty + th - sy) * ky)))
+        if x2 - x1 < 2 or y2 - y1 < 2:
+            return None
+        zoom, sub = _ratio(ow / (tw * kx))
+        out = tk.PhotoImage(master=self.root)
+        try:
+            self.root.tk.call(out, "copy", image, "-from", x1, y1, x2, y2,
+                              "-zoom", zoom, zoom, "-subsample", sub, sub)
+        except tk.TclError:
+            return None
+        return out
 
     def _frame_size(self):
-        """Size to decode frames at: as big as fits in the video area."""
-        return ff.fit_size(self.video_width, self.video_height, self.view_w, self.view_h,
-                           upscale=True)
+        """Size to decode frames at: as big as fits in the video area (the zoomed-in
+        part, when zoomed)."""
+        if not self.zoom:
+            return ff.fit_size(self.video_width, self.video_height, self.view_w, self.view_h,
+                               upscale=True)
+        return self._region()[1]
 
     def close_file(self):
         """The Close button: stop any slideshow, then close the file."""
@@ -1388,7 +1448,15 @@ class GifMakerApp:
             self._display(img.zoom(max(1, min(fw // w, fh // h))), thumb_t)
         return True
 
-    def _display(self, img, t):
+    def _display(self, img, t, region="full", keep_raw=False):
+        """Show img (a still frame). region is the part of the picture it shows (for
+        zooming it instantly); "full" means all of it."""
+        if not keep_raw:
+            self.raw_image = img
+            self.raw_region = self._region(None)[0] if region == "full" else region
+            if self.zoom and self.raw_region != self._region()[0]:
+                fitted = self._fitted(img, self.raw_region)
+                img = fitted if fitted is not None else img
         self.preview_image = img
         self.shown_t = t
         self.canvas.itemconfig(self.canvas_img, image=img)
@@ -1404,26 +1472,27 @@ class GifMakerApp:
         self.frame_want = None
         fw, fh = self._frame_size()
         zoom_vf = self._zoom_vf()
+        region = self._region()[0]
         self.frame_busy = True
 
         def work():
             data = ff.grab_frame(self.ffmpeg, path, t, fw, fh, fast=not exact,
                                  pre_vf=ff.chain(zoom_vf, f"scale={fw}:{fh}"))
-            self.frame_queue.put((token, t, data))
+            self.frame_queue.put((token, t, data, region))
 
         threading.Thread(target=work, daemon=True).start()
 
     def _poll_frame_queue(self):
         try:
             while True:
-                token, t, data = self.frame_queue.get_nowait()
+                token, t, data, region = self.frame_queue.get_nowait()
                 self.frame_busy = False
                 if not data or token != self.video_token or self.playing:
                     continue
                 pos = self.position.get()
                 if self.shown_t is None or abs(t - pos) <= abs(self.shown_t - pos):
                     try:
-                        self._display(tk.PhotoImage(data=data, format="ppm"), t)
+                        self._display(tk.PhotoImage(data=data, format="ppm"), t, region)
                     except tk.TclError:
                         pass
         except queue.Empty:
@@ -1464,6 +1533,7 @@ class GifMakerApp:
         fps = min(self.video_fps, MAX_PLAYBACK_FPS)
         self.player.muted = not self.sound.get()
         self.player.volume, self.player.boost = self.gain_settings()
+        self.play_region = self._region()[0]
         self.player.start(self.video_path, start, size, fps, end=end, pre_vf=self._zoom_vf(),
                           speed=self._play_speed(), sound=self.has_audio)
         if self.has_audio and self.player.no_sound_device:
@@ -1497,6 +1567,13 @@ class GifMakerApp:
             self.play_image.configure(data=data, format="ppm")
         except tk.TclError:
             pass
+        else:
+            # Zoomed since this stream started: show it zoomed until the sharp one comes.
+            shown = self.play_image
+            if self.play_region != self._region()[0]:
+                shown = self._fitted(self.play_image, self.play_region) or self.play_image
+            self.play_shown = shown
+            self.canvas.itemconfig(self.canvas_img, image=shown)
         self.position.set(min(t, self.duration))
         self._show_time(t)
 
@@ -2011,6 +2088,17 @@ class GifMakerApp:
                             f"({size_mb:.2f} MB in all)")
         if self.show_folder.get():
             show_in_folder(*saved)
+
+
+def _ratio(scale):
+    """Small whole numbers (zoom, subsample) whose ratio is closest to scale."""
+    best = None
+    for sub in range(1, 7):
+        zoom = max(1, round(scale * sub))
+        error = abs(zoom / sub - scale) / scale
+        if best is None or error < best[0] - 1e-9:
+            best = (error, zoom, sub)
+    return best[1], best[2]
 
 
 def asset(name):
