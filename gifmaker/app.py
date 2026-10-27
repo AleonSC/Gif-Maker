@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import tkinter as tk
 import webbrowser
 from operator import itemgetter
@@ -45,6 +46,7 @@ MAX_PLAYBACK_FPS = 30
 PLAY_SPEEDS = (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0)
 MAX_BOOST = 400  # percent
 MAX_THUMBNAILS = 300  # cached keyframes for instant scrubbing (~65 MB at most)
+LISTING_MAX_AGE = 5  # seconds a folder listing is trusted for (see _folder_videos)
 PREFETCH_KEEP = 8  # pictures loaded ahead for the arrows (each up to a few MB)
 MAX_ZOOM = 16
 ZOOM_STEP = 1.25  # per notch of the mouse wheel
@@ -103,7 +105,7 @@ class GifMakerApp:
         self.rename_window = None
         self.view_w, self.view_h = PREVIEW_W, PREVIEW_H  # size of the video area
         self.resize_job = None
-        self.listing = None  # (folder, its modified time, paths, {normcased path: index})
+        self.listing = None  # (folder, its modified time, paths, {normcased path: index}, when)
         self.prefetched = collections.OrderedDict()  # (path, mtime) -> (info, size, ppm)
         self.zoom = None  # (x, y, size) of the part shown, as fractions of the picture
         self.zoom_job = None
@@ -205,6 +207,7 @@ class GifMakerApp:
         self.clear_video()
 
         def reopen(mapping):
+            self.listing = None  # files were renamed: list the folder again
             new = mapping.get(os.path.normcase(os.path.abspath(path)), path)
             if not os.path.exists(new):
                 return
@@ -712,6 +715,7 @@ class GifMakerApp:
         LinkDialog(self, url, on_done=self._downloaded)
 
     def _downloaded(self, path):
+        self.listing = None  # a new file in the folder
         self.open_video(path)
         if self.video_path == path:
             self.status.set(f"Downloaded to {path}")
@@ -801,7 +805,10 @@ class GifMakerApp:
         except OSError:
             return []
         cached = self.listing
-        if cached and cached[0] == folder and cached[1] == stamp:
+        # Windows doesn't always update a folder's time straight away when a file
+        # goes, so a listing is also never trusted for longer than a few seconds.
+        if cached and cached[0] == folder and cached[1] == stamp and \
+                time.monotonic() - cached[4] < LISTING_MAX_AGE:
             return cached[2]
 
         def natural(name):  # "clip 2" before "clip 10"
@@ -815,7 +822,7 @@ class GifMakerApp:
             return []
         paths = [os.path.join(folder, n) for n in sorted(names, key=natural)]
         index = {os.path.normcase(p): i for i, p in enumerate(paths)}
-        self.listing = (folder, stamp, paths, index)
+        self.listing = (folder, stamp, paths, index, time.monotonic())
         return paths
 
     def _neighbour(self, step, files=None):
@@ -899,6 +906,9 @@ class GifMakerApp:
             self.status.set("Wait for the save to finish (or cancel it) first.")
             return
         path = self._neighbour(step)
+        if path and not os.path.exists(path):  # gone since the folder was listed
+            self.listing = None
+            path = self._neighbour(step)
         if path:
             self.open_video(path)
         elif self.video_path:
@@ -1177,8 +1187,11 @@ class GifMakerApp:
                 return
             messagebox.showerror("Couldn't delete", f"{os.path.basename(path)} wasn't deleted:\n{e}")
             return
+        self.listing = None  # it's gone: list the folder again (for the arrows and Files)
         if after and os.path.exists(after):
             self.open_video(after)
+        else:
+            self._update_nav()
         recycled = " (it's in the Recycle Bin)" if sys.platform == "win32" else ""
         self.status.set(f"Deleted {os.path.basename(path)}{recycled}.")
 
