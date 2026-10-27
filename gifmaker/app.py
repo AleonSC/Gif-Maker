@@ -4,6 +4,7 @@ import bisect
 import collections
 import os
 import queue
+import random
 import re
 import shutil
 import subprocess
@@ -46,6 +47,7 @@ MAX_PLAYBACK_FPS = 30
 PLAY_SPEEDS = (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0)
 MAX_BOOST = 400  # percent
 MAX_THUMBNAILS = 300  # cached keyframes for instant scrubbing (~65 MB at most)
+SLIDE_SECONDS = (2, 3, 5, 10, 20, 30, 60)  # slideshow intervals offered
 LISTING_MAX_AGE = 5  # seconds a folder listing is trusted for (see _folder_videos)
 PREFETCH_KEEP = 8  # pictures loaded ahead for the arrows (each up to a few MB)
 MAX_ZOOM = 16
@@ -107,6 +109,13 @@ class GifMakerApp:
         self.resize_job = None
         self.listing = None  # (folder, its modified time, paths, {normcased path: index}, when)
         self.prefetched = collections.OrderedDict()  # (path, mtime) -> (info, size, ppm)
+        self.slideshow = False
+        self.slide_job = None
+        self.slide_seconds = tk.IntVar(value=int(theme.load_setting("slide_seconds", 5)))
+        self.slide_seconds.trace_add("write", lambda *_: self._slide_setting_changed())
+        self.slide_videos = self._setting_var("slide_videos", True)
+        self.slide_shuffle = self._setting_var("slide_shuffle", False)
+        self.slide_loop = self._setting_var("slide_loop", True)
         self.zoom = None  # (x, y, size) of the part shown, as fractions of the picture
         self.zoom_job = None
         self.pan = None
@@ -423,7 +432,7 @@ class GifMakerApp:
                 ("Open link...", self.open_link,
                  "Download a video from YouTube or another site and open it  (Ctrl+L, or paste "
                  "or drag a link onto the window)"),
-                ("Close", self.clear_video, "Close the video and start again"),
+                ("Close", self.close_file, "Close the video and start again"),
                 ("Delete...", self.delete_file,
                  "Delete this video and open the next one in the folder  (Delete key)")):
             button = ttk.Button(top, text=text, command=command)
@@ -444,6 +453,10 @@ class GifMakerApp:
         one.pack(side="right", padx=(0, 12))
         Tooltip(one, "Videos you open from Explorer play in this window, "
                      "instead of opening another GifMaker")
+        self.slide_btn = ttk.Menubutton(top, text="Slideshow", menu=self._slideshow_menu(top))
+        self.slide_btn.pack(side="right", padx=(0, 6))
+        Tooltip(self.slide_btn, "Go through the folder's files by themselves  (F5 to start "
+                                "or stop, Esc to stop)")
         self.files_btn = ttk.Button(top, text="Files", width=6, command=self.toggle_files)
         self.files_btn.pack(side="right", padx=(0, 12))
         Tooltip(self.files_btn, "Show the videos in this folder as thumbnails beside the "
@@ -644,7 +657,8 @@ class GifMakerApp:
         self.root.bind("<F2>", lambda e: self.start_rename())
         self.root.bind("<F11>", self.toggle_fullscreen)
         self.root.bind("<F3>", lambda e: self.toggle_files())
-        self.root.bind("<Escape>", lambda e: self.fullscreen and self.toggle_fullscreen())
+        self.root.bind("<Escape>", self._escape)
+        self.root.bind("<F5>", lambda e: self.toggle_slideshow())
         self._update_nav()
         # Let the window be shrunk until the video is small, but no narrower than
         # the play bar (and keep its size from now on, whatever the labels say).
@@ -793,6 +807,8 @@ class GifMakerApp:
             self._start_playback(0.0, None, clip=False)
         if self.is_image:
             self._prefetch_neighbours()
+        if self.slideshow:
+            self._slide_schedule()
 
     # ------------------------------------------------- folder navigation
     def _folder_videos(self):
@@ -837,6 +853,113 @@ class GifMakerApp:
             return None
         i += step
         return files[i] if 0 <= i < len(files) else None
+
+    # --------------------------------------------------------- slideshow
+    def _slideshow_menu(self, parent):
+        menu = tk.Menu(parent, tearoff=False)
+        menu.add_command(label="Start slideshow", accelerator="F5", command=self.toggle_slideshow)
+        menu.add_separator()
+        for seconds in SLIDE_SECONDS:
+            menu.add_radiobutton(label=f"Every {seconds} s" if seconds < 60 else
+                                 f"Every {seconds // 60} min", value=seconds,
+                                 variable=self.slide_seconds)
+        menu.add_separator()
+        menu.add_checkbutton(label="Play videos to the end", variable=self.slide_videos)
+        menu.add_checkbutton(label="Shuffle", variable=self.slide_shuffle)
+        menu.add_checkbutton(label="Start over at the end", variable=self.slide_loop)
+        self.slide_menu = menu
+        theme.on_change(self._color_menu)
+        self._color_menu()
+        return menu
+
+    def _color_menu(self):
+        c = theme.colors
+        self.slide_menu.config(bg=c.get("field", "#ffffff"), fg=c["fg"],
+                               activebackground=c["select"], activeforeground=c["select_fg"],
+                               selectcolor=c["fg"])
+
+    def toggle_slideshow(self):
+        if self.slideshow:
+            self.stop_slideshow()
+            return
+        if not self.video_path:
+            self.status.set("Open a file first: the slideshow goes through its folder.")
+            return
+        if self.busy:
+            self.status.set("Wait for the save to finish (or cancel it) first.")
+            return
+        self.slideshow = True
+        self.slide_btn.config(text="\u25A0 Slideshow")
+        self.slide_menu.entryconfig(0, label="Stop slideshow")
+        self._slide_status()
+        self._slide_schedule()
+
+    def stop_slideshow(self, why="Slideshow stopped."):
+        if not self.slideshow:
+            return
+        self.slideshow = False
+        if self.slide_job:
+            self.root.after_cancel(self.slide_job)
+            self.slide_job = None
+        self.slide_btn.config(text="Slideshow")
+        self.slide_menu.entryconfig(0, label="Start slideshow")
+        self.status.set(why)
+
+    def _slide_status(self):
+        seconds = self.slide_seconds.get()
+        every = f"{seconds} s" if seconds < 60 else f"{seconds // 60} min"
+        videos = ", videos play to the end" if self.slide_videos.get() else ""
+        self.status.set(f"Slideshow: a new file every {every}{videos}.  F5 or Esc stops it.")
+
+    def _slide_setting_changed(self):
+        theme.save_setting("slide_seconds", self.slide_seconds.get())
+        if self.slideshow:
+            self._slide_status()
+            self._slide_schedule()
+
+    def _slide_schedule(self):
+        """Show the current file for its time (a video plays), then the next one."""
+        if self.slide_job:
+            self.root.after_cancel(self.slide_job)
+            self.slide_job = None
+        if not self.slideshow or not self.video_path:
+            return
+        if not self.is_image:
+            if not self.playing:
+                self._start_playback(self.position.get() if self.position.get() <
+                                     self.duration - 0.1 else 0.0, None, clip=False)
+            if self.slide_videos.get():
+                return  # _on_play_end moves on
+        self.slide_job = self.root.after(self.slide_seconds.get() * 1000, self._slide_next)
+
+    def _slide_next(self):
+        self.slide_job = None
+        if not self.slideshow:
+            return
+        folder = self._folder_videos() if self.video_path else []
+        here = os.path.normcase(os.path.abspath(self.video_path)) if self.video_path else None
+        if self.slide_shuffle.get():
+            others = [p for p in folder if os.path.normcase(p) != here and os.path.exists(p)]
+            path = random.choice(others) if others else None
+        else:
+            path = self._neighbour(1, folder)
+            if path and not os.path.exists(path):
+                self.listing = None
+                path = self._neighbour(1)
+            if path is None and self.slide_loop.get() and folder:
+                path = folder[0]
+        if path is None or os.path.normcase(os.path.abspath(path)) == here:
+            self.stop_slideshow("Slideshow finished: that was the last file.")
+            return
+        self.open_video(path)
+        if self.video_path != path:  # it couldn't be opened: try the one after
+            self.slide_job = self.root.after(500, self._slide_next)
+
+    def _escape(self, _event=None):
+        if self.slideshow:
+            self.stop_slideshow()
+        if self.fullscreen:
+            self.toggle_fullscreen()
 
     # ---------------------------------------------- pictures ready ahead
     @staticmethod
@@ -1120,6 +1243,11 @@ class GifMakerApp:
         return ff.fit_size(self.video_width, self.video_height, self.view_w, self.view_h,
                            upscale=True)
 
+    def close_file(self):
+        """The Close button: stop any slideshow, then close the file."""
+        self.stop_slideshow()
+        self.clear_video()
+
     def clear_video(self):
         """Close the current video and put the window back as it was at startup."""
         if self.busy:
@@ -1374,7 +1502,9 @@ class GifMakerApp:
 
     def _on_play_end(self):
         self._playback_stopped()
-        if self.play_clip:
+        if self.slideshow and self.slide_videos.get() and not self.play_clip:
+            self._slide_next()  # this video has played: on to the next file
+        elif self.play_clip:
             self.toggle_play_clip()  # go round the loop again
         elif self.loop_video.get() and self.video_path:
             self._start_playback(0.0, None, clip=False)  # the whole video, from the top
@@ -1383,6 +1513,7 @@ class GifMakerApp:
 
     # ---------------------------------------------------------- snapshot
     def save_snapshot(self):
+        self.stop_slideshow()  # the file mustn't change under the window that opens
         if not self.video_path:
             messagebox.showinfo("GifMaker", "Open a video first.")
             return
@@ -1664,6 +1795,7 @@ class GifMakerApp:
     # -------------------------------------------------------------- make
     def make_gif(self):
         """Make an animation (GIF, WebP or PNG) of the markers or of each section."""
+        self.stop_slideshow()  # the file mustn't change under the window that opens
         if self.busy or self.is_image:
             return
         if not self.video_path:
@@ -1753,6 +1885,7 @@ class GifMakerApp:
     # ------------------------------------------------------------- video
     def save_clip_video(self):
         """Save the sections (or the marker range if there are none) as a new video."""
+        self.stop_slideshow()  # the file mustn't change under the window that opens
         if self.busy or self.is_image:
             return
         if not self.video_path:

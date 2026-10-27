@@ -63,6 +63,11 @@ the picture fills the window, and **Save copy...** rotates, flips or crops it an
 copy, or **Replace original** saves the edit over the file itself (the original goes to the
 Recycle Bin, so you can get it back). **‹ ›**, the Files panel, Delete and renaming work with pictures and videos alike.
 
+**Slideshow** (top right, or F5) goes through the folder's files by itself: pick how long
+each picture shows (2 seconds to a minute), whether videos play to the end, shuffle, and
+whether it starts over at the end. The arrows still work while it runs; F5 or Esc stops it.
+Pair it with fullscreen (F11).
+
 Scroll the mouse wheel over the video (or GIF, or picture) to zoom in around the pointer;
 drag to move around while zoomed, and middle-click (or zoom back out) to reset. It works
 while playing and in fullscreen, and the picture stays sharp as you zoom.
