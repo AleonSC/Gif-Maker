@@ -48,6 +48,51 @@ def send_to_trash(path):
         raise OSError(f"Windows couldn't move it to the Recycle Bin (code {result}).")
 
 
+def free_name(folder, name):
+    """A path in folder for a file called name, adding " (2)", " (3)"... if it's taken."""
+    stem, ext = os.path.splitext(name)
+    path, n = os.path.join(folder, name), 2
+    while os.path.lexists(path):
+        path, n = os.path.join(folder, f"{stem} ({n}){ext}"), n + 1
+    return path
+
+
+def move_file(src, dst, tries=20, wait=0.15):
+    """Move src to dst (which must not exist), even to another drive. Retries for a few
+    seconds while the file is still open (Windows won't move an open file). Raises
+    OSError if it couldn't; then src is still where it was."""
+    import shutil
+    import time
+
+    for attempt in range(tries):
+        try:
+            if os.path.lexists(dst):
+                raise FileExistsError(f"{os.path.basename(dst)} is already there.")
+            os.rename(src, dst)
+            return
+        except PermissionError:
+            if attempt == tries - 1:
+                raise
+            time.sleep(wait)
+        except OSError as e:
+            if isinstance(e, FileExistsError) or not os.path.exists(src):
+                raise
+            break  # another drive: copy it over, then remove the original
+    shutil.copy2(src, dst)
+    for attempt in range(tries):
+        try:
+            os.remove(src)
+            return
+        except OSError:
+            if attempt == tries - 1:
+                try:
+                    os.remove(dst)  # leave things as they were
+                except OSError:
+                    pass
+                raise
+            time.sleep(wait)
+
+
 def reveal(paths):
     """Open the folder of paths in Explorer with those files selected (highlighted).
 

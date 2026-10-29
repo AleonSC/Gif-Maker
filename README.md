@@ -68,6 +68,12 @@ each picture shows (2 seconds to a minute), whether videos play to the end, shuf
 whether it starts over at the end. The arrows still work while it runs; F5 or Esc stops it.
 Pair it with fullscreen (F11).
 
+**Sort keys** give folders a key each: click *Sort keys...*, add a folder and press a
+letter, a number or a spare F key for it. Then, while viewing a file, pressing that key moves
+it into that folder and opens the next one (the Files panel updates too). A file with the
+same name already there is kept, and the moved one gets " (2)" added. Ctrl+Z puts the last
+sorted file back.
+
 Scroll the mouse wheel over the video (or GIF, or picture) to zoom in around the pointer;
 drag to move around while zoomed, and middle-click (or zoom back out) to reset. Once
 zoomed in, the picture fills the whole video area whatever its shape. Each step shows at

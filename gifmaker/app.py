@@ -21,6 +21,7 @@ from . import ffmpeg_tools as ff
 from . import downloader
 from . import files
 from . import single_instance
+from . import sort_keys
 from . import theme
 from . import updater
 from . import ui_thread
@@ -117,6 +118,9 @@ class GifMakerApp:
         self.slide_shuffle = self._setting_var("slide_shuffle", False)
         self.slide_loop = self._setting_var("slide_loop", True)
         self.zoom = None  # (x, y, magnification): see _region()
+        self.sort_keys = sort_keys.load()  # {key: folder}
+        self.sort_window = None
+        self.last_sort = None  # (from, to) of the last file sorted, for Ctrl+Z
         self.zoom_job = None
         self.pan = None
 
@@ -437,7 +441,11 @@ class GifMakerApp:
                  "or drag a link onto the window)"),
                 ("Close", self.close_file, "Close the video and start again"),
                 ("Delete...", self.delete_file,
-                 "Delete this video and open the next one in the folder  (Delete key)")):
+                 "Delete this video and open the next one in the folder  (Delete key)"),
+                ("Sort keys...", self.open_sort_keys,
+                 lambda: "Give folders a key: pressing it moves the file you're viewing "
+                         "there and opens the next one  (Ctrl+Z undoes)\n\n"
+                         + sort_keys.summary(self.sort_keys))):
             button = ttk.Button(top, text=text, command=command)
             button.pack(side="left", padx=(0, 4))
             Tooltip(button, tip)
@@ -662,6 +670,8 @@ class GifMakerApp:
         self.root.bind("<F3>", lambda e: self.toggle_files())
         self.root.bind("<Escape>", self._escape)
         self.root.bind("<F5>", lambda e: self.toggle_slideshow())
+        self.root.bind("<Key>", self._key_sort)  # the sort keys (more specific keys win)
+        self.root.bind("<Control-z>", lambda e: self._key_set(e, self.undo_sort))
         self._update_nav()
         # Let the window be shrunk until the video is small, but no narrower than
         # the play bar (and keep its size from now on, whatever the labels say).
@@ -1363,6 +1373,110 @@ class GifMakerApp:
         self.sections = []  # already confirmed, so don't ask again when opening the next one
         self.clear_video()  # stops playback and everything else reading the file
         self._delete_when_free(path, after, tries=15)
+
+    # -------------------------------------------------------- sort keys
+    def open_sort_keys(self):
+        if self.sort_window is not None and self.sort_window.winfo_exists():
+            self.sort_window.lift()
+            self.sort_window.focus_force()
+            return
+        self.sort_window = sort_keys.SortKeysWindow(self, self._sort_keys_changed)
+
+    def _sort_keys_changed(self, keys):
+        self.sort_keys = keys
+
+    def _key_sort(self, event):
+        if isinstance(event.widget, _TYPING_WIDGETS):
+            return None
+        key = sort_keys.key_name(event)
+        if key in self.sort_keys:
+            self.sort_to(self.sort_keys[key], key)
+            return "break"
+        return None
+
+    def sort_to(self, folder, key=""):
+        """Move the open file into folder and open the next one in its own folder."""
+        if not self.video_path:
+            return
+        if self.busy:
+            self.status.set("Wait for the save to finish (or cancel it) before sorting.")
+            return
+        if not os.path.isdir(folder):
+            self.status.set(f"The folder for {sort_keys.label(key)} isn't there any more: "
+                            f"{folder}. Change it in Sort keys.")
+            return
+        path = self.video_path
+        if os.path.normcase(os.path.dirname(os.path.abspath(path))) == \
+                os.path.normcase(os.path.abspath(folder)):
+            self.status.set(f"It's already in {folder}.")
+            return
+        if self.sections and not messagebox.askyesno(
+                "Sort file", f"Moving it clears your {len(self.sections)} section(s). Move it anyway?"):
+            return
+        dst = files.free_name(folder, os.path.basename(path))
+        after = self._neighbour(1) or self._neighbour(-1)
+        self.sections = []  # already asked
+        self._release(lambda p: os.path.normcase(os.path.abspath(p)) ==
+                      os.path.normcase(os.path.abspath(path)))  # closes it here and in the grid
+        self._move(path, dst, after, f"Moved {os.path.basename(path)} to "
+                                     f"{os.path.basename(os.path.normpath(folder)) or folder}"
+                                     "  (Ctrl+Z puts it back).", undo=(path, dst))
+
+    def undo_sort(self):
+        """Put the last sorted file back where it was, and open it."""
+        if not self.last_sort:
+            return
+        if self.busy:
+            self.status.set("Wait for the save to finish (or cancel it) first.")
+            return
+        src, dst = self.last_sort  # it went from src to dst
+        if not os.path.exists(dst):
+            self.last_sort = None
+            self.status.set(f"{os.path.basename(dst)} isn't in {os.path.dirname(dst)} any more.")
+            return
+        back = src if not os.path.lexists(src) else files.free_name(
+            os.path.dirname(src), os.path.basename(src))
+        self.last_sort = None
+        self._release(lambda p: os.path.normcase(os.path.abspath(p)) ==
+                      os.path.normcase(os.path.abspath(dst)))
+        self._move(dst, back, back, f"Put {os.path.basename(back)} back.", undo=None)
+
+    def _move(self, src, dst, after, done_text, undo):
+        """Move src to dst in the background (big files may be copied to another drive),
+        opening after straight away if it's another file, or once moved if it's dst."""
+        if after and after != dst and os.path.exists(after):
+            self.open_video(after)
+        else:
+            self._update_nav()
+        self.status.set(f"Moving {os.path.basename(src)}...")
+
+        def work():
+            try:
+                files.move_file(src, dst)
+                error = None
+            except OSError as e:
+                error = e
+            ui_thread.call(lambda: self._moved(src, dst, after, done_text, undo, error))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _moved(self, src, dst, after, done_text, undo, error):
+        self.listing = None  # list the folder again (for the arrows and Files)
+        if error:
+            messagebox.showerror("Couldn't move", f"{os.path.basename(src)} wasn't moved:\n{error}")
+            if not self.video_path and os.path.exists(src):
+                self.open_video(src)
+            else:
+                self._update_nav()
+            return
+        if undo:
+            self.last_sort = undo
+        if after == dst and not self.busy:
+            self.open_video(dst)
+        else:
+            self._update_nav()
+        if not self.status.get() or self.status.get().startswith("Moving "):
+            self.status.set(done_text)
 
     def _delete_when_free(self, path, after, tries):
         # ffmpeg processes reading the file take a moment to exit, and Windows won't
