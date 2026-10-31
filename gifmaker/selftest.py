@@ -158,7 +158,9 @@ def run(report_path):
         # joined with the bundled ffmpeg (real sites can't be relied on in a build).
         import functools
         import http.server
+        import shutil
         import threading
+        import urllib.parse
         from . import downloader
 
         class Quiet(http.server.SimpleHTTPRequestHandler):
@@ -180,8 +182,12 @@ def run(report_path):
         try:
             folder = os.path.join(os.path.dirname(src), "downloads")
             os.makedirs(folder)
-            url = f"http://127.0.0.1:{server.server_port}/in.mp4"
+            # a title Windows' code page can't show (it used to lose the saved file)
+            name = "Caf\u00e9 \U0001F600 \u0141\u00f3d\u017a \u65e5\u672c.mp4"
+            shutil.copyfile(src, os.path.join(os.path.dirname(src), name))
+            url = f"http://127.0.0.1:{server.server_port}/{urllib.parse.quote(name)}"
             path = downloader.run(downloader.build_command(cmd, url, folder, "720p", exe))
+            assert os.path.dirname(path) == folder and "\U0001F600" in path, path
         finally:
             server.shutdown()
         return f"yt-dlp {version.stdout.strip()}, downloaded {os.path.getsize(path)} bytes"

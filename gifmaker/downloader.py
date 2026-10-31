@@ -6,6 +6,7 @@ first use and asked to update itself at most once a day after that. Running
 from source can use an installed yt-dlp instead (`pip install yt-dlp`).
 """
 
+import collections
 import json
 import os
 import re
@@ -15,6 +16,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+import uuid
 
 EXE_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
 UPDATE_EVERY = 24 * 3600  # seconds between update checks
@@ -34,6 +36,8 @@ _REDGIFS = re.compile(
     r"^https?://(?:[a-z0-9-]+\.)*redgifs\.com/(?:(?:watch|ifr|i)/)?"
     r"(?P<id>[A-Za-z]+)(?:-(?:mobile|silent|large|poster|small))*(?:\.\w+)?/?(?:[?#].*)?$",
     re.I)
+_VIDEO_TYPES = (".mp4", ".webm", ".mkv", ".mov", ".m4v", ".gif", ".avi", ".flv")
+_STREAM = re.compile(r"\.f\d[\w-]*\.\w+$")
 _REDGIFS_PAGES = {"browse", "users", "niches", "gifs", "explore", "upload", "settings",
                   "login", "signup", "feed", "creators", "about", "terms", "privacy"}
 
@@ -130,7 +134,11 @@ def update_if_due(cmd, on_status=None):
 
 def build_command(cmd, url, folder, quality, ffmpeg):
     """The yt-dlp command line that downloads url as an mp4 into folder."""
+    # Where yt-dlp writes the saved file's path, as UTF-8: printed to the pipe it goes
+    # through the Windows code page, which mangles emoji and many accented letters.
+    record = os.path.join(tempfile.gettempdir(), f"gifmaker-saved-{uuid.uuid4().hex}.txt")
     return cmd + [
+        "--print-to-file", "after_move:%(filepath)s", record,
         "--no-playlist", "--newline", "--progress", "--no-colors", "--windows-filenames",
         "--ffmpeg-location", ffmpeg,
         "-f", "bv*+ba/b", "-S", QUALITIES.get(quality, QUALITIES["Best"]),
@@ -149,16 +157,22 @@ def run(cmd, on_progress=None, should_cancel=None):
     on_progress(fraction or None, text) gets updates. Raises DownloadError with
     yt-dlp's own explanation if it fails, or "cancelled".
     """
+    record = cmd[cmd.index("--print-to-file") + 2] if "--print-to-file" in cmd else None
+    folder = os.path.dirname(cmd[cmd.index("-o") + 1]) if "-o" in cmd else None
+    started = time.time()
+    env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW,
+                            stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW, env=env,
                             encoding="utf-8", errors="replace", bufsize=1)
-    saved, errors, stage = None, [], 0
+    saved, errors, stage, tail = None, [], 0, collections.deque(maxlen=4)
     try:
         for line in proc.stdout:
             if should_cancel and should_cancel():
                 proc.kill()
                 raise DownloadError("cancelled")
             line = line.strip()
+            if line:
+                tail.append(line)
             if line.startswith("PROGRESS "):
                 pct, speed, eta = (line[9:].split("|") + ["", ""])[:3]
                 try:
@@ -182,10 +196,54 @@ def run(cmd, on_progress=None, should_cancel=None):
     finally:
         if proc.poll() is None:
             proc.kill()
+    if proc.returncode == 0 and not (saved and os.path.exists(saved)):
+        saved = _recorded(record) or _newest(folder, started) or saved
+    if record:
+        try:
+            os.remove(record)
+        except OSError:
+            pass
     if proc.returncode != 0 or not saved or not os.path.exists(saved):
-        reason = errors[-1] if errors else f"yt-dlp stopped (code {proc.returncode})."
+        if errors:
+            reason = errors[-1]
+        elif proc.returncode == 0:
+            last = next((t for t in reversed(tail) if not t.startswith("PROGRESS ")), "")
+            reason = ("yt-dlp finished but no video was saved (the link may not lead to a "
+                      "video, or it's a list of them)." + (f" Last message: {last[:200]}"
+                                                           if last else ""))
+        else:
+            reason = f"yt-dlp stopped (code {proc.returncode})."
         raise DownloadError(_plain(reason))
     return saved
+
+
+def _recorded(record):
+    """The last path yt-dlp wrote to the record file, if it's there."""
+    try:
+        with open(record, encoding="utf-8", errors="replace") as f:
+            paths = [p.strip() for p in f if p.strip()]
+    except (OSError, TypeError):
+        return None
+    return next((p for p in reversed(paths) if os.path.exists(p)), None)
+
+
+def _newest(folder, since):
+    """The newest finished video in folder written since the download started."""
+    best = None
+    try:
+        with os.scandir(folder) as entries:
+            for e in entries:
+                name = e.name.lower()
+                # finished videos only: not parts, nor the separate video and sound
+                # streams (name.f137.mp4) that get joined
+                if not e.is_file() or not name.endswith(_VIDEO_TYPES) or _STREAM.search(name):
+                    continue
+                stamp = e.stat().st_mtime
+                if stamp >= since - 2 and (best is None or stamp > best[0]):
+                    best = (stamp, e.path)
+    except (OSError, TypeError):
+        return None
+    return best[1] if best else None
 
 
 def _plain(reason):
