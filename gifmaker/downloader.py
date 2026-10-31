@@ -27,6 +27,15 @@ QUALITIES = {  # label -> yt-dlp format sort (best first within the limit)
 }
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 _URL = re.compile(r"^https?://\S+\.\S+", re.I)
+# Any RedGifs link: its pages (watch, ifr, i), and its file links as the site's
+# download button and "copy video link" give them, e.g. media.redgifs.com/Name.mp4,
+# Name-mobile.mp4, Name-silent.mp4, Name-poster.jpg on thumbs*/media/i hosts.
+_REDGIFS = re.compile(
+    r"^https?://(?:[a-z0-9-]+\.)*redgifs\.com/(?:(?:watch|ifr|i)/)?"
+    r"(?P<id>[A-Za-z]+)(?:-(?:mobile|silent|large|poster|small))*(?:\.\w+)?/?(?:[?#].*)?$",
+    re.I)
+_REDGIFS_PAGES = {"browse", "users", "niches", "gifs", "explore", "upload", "settings",
+                  "login", "signup", "feed", "creators", "about", "terms", "privacy"}
 
 
 class DownloadError(Exception):
@@ -35,6 +44,16 @@ class DownloadError(Exception):
 
 def looks_like_link(text):
     return bool(text) and bool(_URL.match(text.strip()))
+
+
+def normalize(url):
+    """The link in the form yt-dlp knows. RedGifs file links (media.redgifs.com/
+    SomeName.mp4 and the like) become the watch page of that clip; others are kept."""
+    url = url.strip()
+    m = _REDGIFS.match(url)
+    if m and m.group("id").lower() not in _REDGIFS_PAGES:
+        return f"https://www.redgifs.com/watch/{m.group('id').lower()}"
+    return url
 
 
 def _tools_dir():
@@ -120,7 +139,7 @@ def build_command(cmd, url, folder, quality, ffmpeg):
         "--progress-template", "download:PROGRESS %(progress._percent_str)s|"
                                "%(progress._speed_str)s|%(progress._eta_str)s",
         "--print", "after_move:SAVED %(filepath)s",
-        url,
+        normalize(url),
     ]
 
 
