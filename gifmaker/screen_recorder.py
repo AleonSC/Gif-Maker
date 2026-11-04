@@ -365,7 +365,10 @@ class AreaPicker(tk.Toplevel):
         self.on_pick = on_pick
         self.vx, self.vy, vw, vh = virtual_screen(root)
         self.overrideredirect(True)
-        self.geometry(f"{vw}x{vh}{self.vx:+d}{self.vy:+d}")
+        # Across every monitor: Tk otherwise caps a window at the main monitor's size,
+        # and "+-1920" (not "-1920", which counts from the right edge) is left of it.
+        self.maxsize(vw, vh)
+        self.geometry(f"{vw}x{vh}+{self.vx}+{self.vy}")
         self.attributes("-topmost", True)
         try:
             self.attributes("-alpha", 0.45)
