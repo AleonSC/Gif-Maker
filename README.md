@@ -36,8 +36,9 @@ GifMaker fetches the first time (about 18 MB) and keeps up to date by itself, si
 change often. RedGifs works with any of its links, including the file links
 (media.redgifs.com/Name.mp4) its download button gives. For videos you can only watch
 logged in (e.g. as a subscriber), set **Logged in** to the browser you're logged in to the
-site with, and the download uses that login (Firefox works best: Chrome and Edge lock
-their logins away from other programs). When a page has several videos (the main one and
+site with, and the download uses that login. Firefox works best: GifMaker reads its login
+itself, including a fresh one and one without "remember me". Chrome and Edge lock their
+logins away from other programs. When a page has several videos (the main one and
 previews of others), GifMaker lists them with their lengths and downloads the one you pick. Copy-protected videos (DRM) and ones that need you to sign in can't be
 downloaded.
 

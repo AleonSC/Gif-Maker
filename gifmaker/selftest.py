@@ -204,7 +204,7 @@ def run(report_path):
                 f.write('<html><title>Page</title><video src="preview.mp4"></video>'
                         '<video src="in.mp4"></video></html>')
             page = f"http://127.0.0.1:{server.server_port}/page.html"
-            _title, videos = downloader.list_videos(cmd, page, exe)
+            _title, videos, _note = downloader.list_videos(cmd, page, exe)
             assert [round(v[2] or 0) for v in videos] == [0, 2], videos
             folder2 = os.path.join(os.path.dirname(src), "picked")
             picked = downloader.run(downloader.build_command(cmd, page, folder2, "720p", exe,
@@ -225,7 +225,7 @@ def run(report_path):
                 f.write(f'<html><title>Page Two</title><video src="preview.mp4"></video>'
                         f'<video><source src="{base}/locked/Main%20Video/hls/master.m3u8" '
                         f'type="application/x-mpegURL"></video></html>')
-            title, videos = downloader.list_videos(cmd, base + "/page2.html", exe)
+            title, videos, _note = downloader.list_videos(cmd, base + "/page2.html", exe)
             streams = [v for v in videos if isinstance(v[0], str)]
             assert len(streams) == 1 and round(streams[0][2] or 0) == 2 and \
                 streams[0][1] == "Main Video (stream)", videos
@@ -253,6 +253,48 @@ def run(report_path):
             assert ff.grab_frame(exe, path, 0, 150, 100), ext
             made.append(ext)
         return "opened " + " ".join(made)
+
+    def firefox_login():
+        # a made-up Firefox profile: a login still only in cookies.sqlite-wal (not yet
+        # merged in) and a "don't remember me" login in the session file
+        import json
+        import sqlite3
+        import time
+        from . import firefox_cookies
+
+        home = tempfile.mkdtemp()
+        profile = os.path.join(home, "Mozilla", "Firefox", "Profiles", "x.default-release")
+        os.makedirs(os.path.join(profile, "sessionstore-backups"))
+        db = os.path.join(profile, "cookies.sqlite")
+        conn = sqlite3.connect(db)
+        conn.execute("PRAGMA user_version=17")
+        conn.execute("CREATE TABLE moz_cookies (id INTEGER PRIMARY KEY, originAttributes TEXT "
+                     "NOT NULL DEFAULT '', name TEXT, value TEXT, host TEXT, path TEXT, "
+                     "expiry INTEGER, isSecure INTEGER)")
+        conn.commit()
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA wal_autocheckpoint=0")
+        conn.execute("INSERT INTO moz_cookies (name, value, host, path, expiry, isSecure) "
+                     "VALUES ('logged_in', 'me', '.example.com', '/', ?, 1)",
+                     ((int(time.time()) + 3600) * 1000,))
+        conn.commit()
+        saved = {n: open(os.path.join(profile, n), "rb").read()
+                 for n in ("cookies.sqlite", "cookies.sqlite-wal")}
+        conn.close()  # (merges the -wal in: put back the files as they were before)
+        for n, data in saved.items():
+            with open(os.path.join(profile, n), "wb") as f:
+                f.write(data)
+        raw = json.dumps({"cookies": [{"host": "www.example.com", "name": "session",
+                                       "value": "s1", "path": "/"}]}).encode()
+        n = len(raw) - 15  # one LZ4 block of plain bytes
+        block = bytes([0xF0]) + b"\xff" * (n // 255) + bytes([n % 255]) + raw
+        with open(os.path.join(profile, "sessionstore-backups", "recovery.jsonlz4"), "wb") as f:
+            f.write(b"mozLz40\0" + len(raw).to_bytes(4, "little") + block)
+        cookies, _ = firefox_cookies.cookies_for("https://www.example.com/video/1",
+                                                 [os.path.dirname(profile)])
+        got = sorted((c[1], c[2]) for c in cookies)
+        assert got == [("logged_in", "me"), ("session", "s1")], got
+        return "read a login still in cookies.sqlite-wal and one from the session file"
 
     def screen_recording():
         # a second of the top-left of the screen, as the Record screen button does
@@ -301,6 +343,7 @@ def run(report_path):
     check("dark mode", dark_mode)
     check("download from a link", link_download)
     check("screen recording", screen_recording)
+    check("Firefox login", firefox_login)
     with open(report_path, "w", encoding="utf-8") as f:
         f.write("\n".join(results) + "\n")
     return 0 if all(r.startswith("ok") for r in results) else 1

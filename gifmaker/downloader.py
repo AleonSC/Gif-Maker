@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -143,27 +144,61 @@ BROWSER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (
                  "Gecko) Chrome/130.0.0.0 Safari/537.36")
 
 
-def _login(browser):
+def _login(browser, url):
+    """(yt-dlp arguments for downloading url logged in as in browser, a note for the
+    user or None). Firefox's login is read here (see firefox_cookies); other
+    browsers' by yt-dlp."""
     name = BROWSERS.get(browser)
-    return ["--cookies-from-browser", name] if name else []
+    if not name:
+        return [], None
+    if name == "firefox":
+        from . import firefox_cookies
+
+        site = urllib.parse.urlsplit(url).hostname or "the site"
+        try:
+            cookies, profile = firefox_cookies.cookies_for(url)
+        except (OSError, sqlite3.Error):
+            return ["--cookies-from-browser", name], None  # let yt-dlp try
+        if not cookies:
+            return [], (f"Firefox has no login for {site}" +
+                        ("" if profile else " (Firefox's files weren't found)") +
+                        ", so this is what visitors who aren't logged in get. Log in to "
+                        "the site in Firefox, then try again.")
+        path = os.path.join(tempfile.gettempdir(), f"gifmaker-cookies-{uuid.uuid4().hex}.txt")
+        firefox_cookies.write_netscape(cookies, path)
+        return ["--cookies", path], None
+    return ["--cookies-from-browser", name], None
+
+
+def _forget_login(cmd):
+    """Delete the cookies file a command used, if GifMaker made it."""
+    if "--cookies" in cmd:
+        path = cmd[cmd.index("--cookies") + 1]
+        if os.path.basename(path).startswith("gifmaker-cookies-"):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 
 def list_videos(cmd, url, ffmpeg, browser=None):
     """The videos on the page at url, for picking one: (page title, [[key, name,
-    seconds or None, height or None], ...]). key is the video's number for yt-dlp,
-    or the link of one GifMaker found in the page itself (see _scan). The list is
-    empty when url is simply one video. Raises DownloadError."""
+    seconds or None, height or None], ...], note). key is the video's number for
+    yt-dlp, or the link of one GifMaker found in the page itself (see _scan). The list
+    is empty when url is simply one video. note says if the login couldn't be used.
+    Raises DownloadError."""
     folder = tempfile.mkdtemp(prefix="gifmaker-page-")
+    login, note = _login(browser, normalize(url))
     try:
         proc = subprocess.run(
             cmd + ["-J", "--flat-playlist", "--no-playlist", "--no-warnings",
-                   "-I", f"1:{LIST_LIMIT}", "--write-pages", *_login(browser),
-                   normalize(url)],
+                   "-I", f"1:{LIST_LIMIT}", "--write-pages", *login, normalize(url)],
             capture_output=True, timeout=180, creationflags=_NO_WINDOW, cwd=folder,
             stdin=subprocess.DEVNULL, env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1"))
         found = _scan(folder)
     finally:
         shutil.rmtree(folder, ignore_errors=True)
+        _forget_login(login)
     data = None
     if proc.returncode == 0:
         try:
@@ -181,7 +216,7 @@ def list_videos(cmd, url, ffmpeg, browser=None):
     entries = [e for e in (data.get("entries") or []) if isinstance(e, dict)] \
         if data.get("_type") == "playlist" else [data] if data else []
     if data and data.get("_type") != "playlist" and data.get("extractor_key") not in _GENERIC:
-        return title, []  # a site yt-dlp knows, with one video: just download it
+        return title, [], note  # a site yt-dlp knows, with one video: just download it
     videos = [[i, _entry_name(e), e.get("duration"), e.get("height")]
               for i, e in enumerate(entries, 1)]
     measure = [(v, _entry_url(e), e.get("http_headers"), e.get("cookies"))
@@ -195,7 +230,7 @@ def list_videos(cmd, url, ffmpeg, browser=None):
             videos.append(video)
             measure.append((video, link, None, None))
     if len(videos) < 2 and not any(isinstance(v[0], str) for v in videos):
-        return title, []
+        return title, [], note
     links = [_entry_url(e) for e in entries] + [v[0] for v in videos[len(entries):]]
     _tell_apart(videos, links)
     # Videos found in a page's HTML come without a length: ask ffmpeg (all at once).
@@ -205,7 +240,7 @@ def list_videos(cmd, url, ffmpeg, browser=None):
         t.start()
     for t in threads:
         t.join(timeout=25)
-    return title, videos
+    return title, videos, note
 
 
 _MEDIA_LINK = re.compile(r"""https?:(?:\\?/){2}[^\s"'<>()]+?\.(?:m3u8|mpd|mp4|webm|m4v|mov)"""
@@ -338,6 +373,7 @@ def build_command(cmd, url, folder, quality, ffmpeg, browser=None, item=None, ti
     its number, or a link found in the page, downloaded as coming from that page and
     named after title."""
     name = "%(title).120B [%(id)s].%(ext)s"
+    login = _login(browser, normalize(url))[0]
     extra = ["-I", str(item)] if isinstance(item, int) else []
     if isinstance(item, str):
         extra = _from_page(url)
@@ -349,7 +385,7 @@ def build_command(cmd, url, folder, quality, ffmpeg, browser=None, item=None, ti
     # through the Windows code page, which mangles emoji and many accented letters.
     record = os.path.join(tempfile.gettempdir(), f"gifmaker-saved-{uuid.uuid4().hex}.txt")
     return cmd + [
-        *_login(browser), *extra,
+        *login, *extra,
         "--print-to-file", "after_move:%(filepath)s", record,
         "--no-playlist", "--newline", "--progress", "--no-colors", "--windows-filenames",
         "--ffmpeg-location", ffmpeg,
@@ -415,6 +451,7 @@ def run(cmd, on_progress=None, should_cancel=None):
             os.remove(record)
         except OSError:
             pass
+    _forget_login(cmd)
     if proc.returncode != 0 or not saved or not os.path.exists(saved):
         if errors:
             reason = errors[-1]

@@ -3,6 +3,7 @@
 import os
 import subprocess
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, ttk
 
@@ -152,12 +153,15 @@ class LinkDialog(tk.Toplevel):
                 status("Finding the video...", None)
                 chosen, name = item, title
                 if chosen is None:
-                    name, videos = downloader.list_videos(cmd, url, ffmpeg, login)
+                    name, videos, note = downloader.list_videos(cmd, url, ffmpeg, login)
                     if self.cancelled:
                         return
                     if len(videos) > 1:  # several on the page: ask which
-                        later(lambda: self._choose(url, folder, videos, name))
+                        later(lambda: self._choose(url, folder, videos, name, note))
                         return
+                    if note:
+                        status(note, None)
+                        time.sleep(3)
                     if videos:  # just one, found in the page itself
                         chosen = videos[0][0]
                     status("Starting the download...", None)
@@ -173,14 +177,14 @@ class LinkDialog(tk.Toplevel):
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _choose(self, url, folder, videos, title):
+    def _choose(self, url, folder, videos, title, note=None):
         """The page has several videos: list them and download the one picked."""
         self.busy = False
         if self.cancelled or not self.winfo_exists():
             return
         self.go_btn.config(state="normal")
         self._set_status(f"This page has {len(videos)} videos. Pick one.", 0)
-        ChooseVideo(self, videos, lambda key: self._download(url, folder, key, title))
+        ChooseVideo(self, videos, lambda key: self._download(url, folder, key, title), note)
 
     def _finished(self, path, error):
         self.busy = False
@@ -209,7 +213,7 @@ def _length(seconds):
 class ChooseVideo(tk.Toplevel):
     """Pick one of the videos on a page. on_pick(key) gets the one chosen."""
 
-    def __init__(self, parent, videos, on_pick):
+    def __init__(self, parent, videos, on_pick, note=None):
         super().__init__(parent)
         self.on_pick = on_pick
         self.title("Which video?")
@@ -220,6 +224,9 @@ class ChooseVideo(tk.Toplevel):
         ttk.Label(main, text="This page has several videos. The longest is usually the main "
                              "one; the short ones are often previews of other videos.",
                   style="Muted.TLabel", wraplength=520, justify="left").pack(anchor="w")
+        if note:  # e.g. the login couldn't be used, so the main video may be missing
+            ttk.Label(main, text="\u26A0  " + note, wraplength=520, justify="left",
+                      foreground="#e0a030").pack(anchor="w", pady=(6, 0))
         table = ttk.Frame(main)
         table.pack(fill="both", expand=True, pady=8)
         self.tree = ttk.Treeview(table, columns=("length", "size", "name"), show="headings",
