@@ -34,7 +34,11 @@ opens it, ready to clip: paste the page's link, pick the quality and the folder,
 link from the browser onto it. It uses [yt-dlp](https://github.com/yt-dlp/yt-dlp), which
 GifMaker fetches the first time (about 18 MB) and keeps up to date by itself, since sites
 change often. RedGifs works with any of its links, including the file links
-(media.redgifs.com/Name.mp4) its download button gives. Copy-protected videos (DRM) and ones that need you to sign in can't be
+(media.redgifs.com/Name.mp4) its download button gives. For videos you can only watch
+logged in (e.g. as a subscriber), set **Logged in** to the browser you're logged in to the
+site with, and the download uses that login (Firefox works best: Chrome and Edge lock
+their logins away from other programs). When a page has several videos (the main one and
+previews of others), GifMaker lists them with their lengths and downloads the one you pick. Copy-protected videos (DRM) and ones that need you to sign in can't be
 downloaded.
 
 **Snapshot...** saves the frame you're looking at as a full-resolution PNG or JPEG,

@@ -1,6 +1,7 @@
 """The "Open link" window: download a video from a site and open it."""
 
 import os
+import subprocess
 import threading
 import tkinter as tk
 from tkinter import filedialog, ttk
@@ -9,6 +10,9 @@ from . import downloader
 from . import theme
 from . import ui_thread
 from .tooltip import Tooltip
+
+
+NO_LOGIN = "No (public videos)"
 
 
 class LinkDialog(tk.Toplevel):
@@ -27,6 +31,9 @@ class LinkDialog(tk.Toplevel):
         self.quality = tk.StringVar(value=theme.load_setting("download_quality", "1080p"))
         if self.quality.get() not in downloader.QUALITIES:
             self.quality.set("1080p")
+        self.login = tk.StringVar(value=theme.load_setting("download_login", NO_LOGIN))
+        if self.login.get() not in downloader.BROWSERS:
+            self.login.set(NO_LOGIN)
         self.folder = tk.StringVar(value=theme.load_setting("download_folder", "")
                                    or downloader.default_folder())
         self.status = tk.StringVar()
@@ -62,18 +69,27 @@ class LinkDialog(tk.Toplevel):
         Tooltip(quality, "The highest quality to get (lower downloads faster). "
                          "Saved as MP4 where the site allows.")
 
-        ttk.Label(main, text="Save in").grid(row=2, column=0, sticky="w", padx=(0, 10), pady=4)
-        ttk.Entry(main, textvariable=self.folder).grid(row=2, column=1, sticky="ew", pady=4)
+        ttk.Label(main, text="Logged in").grid(row=2, column=0, sticky="w", padx=(0, 10), pady=4)
+        login = ttk.Combobox(main, textvariable=self.login, state="readonly", width=18,
+                             values=[NO_LOGIN, *downloader.BROWSERS])
+        login.grid(row=2, column=1, sticky="w", pady=4)
+        Tooltip(login, "For videos you can only watch logged in (e.g. as a subscriber): pick "
+                       "the browser you're logged in to the site with, and the download "
+                       "uses that login. Firefox works best; Chrome and Edge lock their "
+                       "logins away from other programs.")
+
+        ttk.Label(main, text="Save in").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=4)
+        ttk.Entry(main, textvariable=self.folder).grid(row=3, column=1, sticky="ew", pady=4)
         ttk.Button(main, text="Browse...", command=self._browse).grid(
-            row=2, column=2, sticky="w", padx=(6, 0), pady=4)
+            row=3, column=2, sticky="w", padx=(6, 0), pady=4)
 
         self.progress = ttk.Progressbar(main, maximum=1.0)
-        self.progress.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(10, 2))
+        self.progress.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(10, 2))
         ttk.Label(main, textvariable=self.status, style="Muted.TLabel", width=1).grid(
-            row=4, column=0, columnspan=3, sticky="ew")
+            row=5, column=0, columnspan=3, sticky="ew")
 
         buttons = ttk.Frame(main)
-        buttons.grid(row=5, column=0, columnspan=3, sticky="e", pady=(10, 0))
+        buttons.grid(row=6, column=0, columnspan=3, sticky="e", pady=(10, 0))
         self.go_btn = ttk.Button(buttons, text="Download and open", command=self.start)
         self.go_btn.pack(side="left")
         ttk.Button(buttons, text="Cancel", command=self.close).pack(side="left", padx=(6, 0))
@@ -108,10 +124,17 @@ class LinkDialog(tk.Toplevel):
             return
         theme.save_setting("download_quality", self.quality.get())
         theme.save_setting("download_folder", folder)
+        theme.save_setting("download_login", self.login.get())
+        self._download(url, folder, item=None)
+
+    def _download(self, url, folder, item):
+        """Download url (only video number item, if the page has several; None means
+        list them first and ask if there are several)."""
         self.busy = True
         self.go_btn.config(state="disabled")
         self._set_status("Starting...", None)
         quality, ffmpeg = self.quality.get(), self.app.ffmpeg
+        login = self.login.get() if self.login.get() in downloader.BROWSERS else None
 
         def later(fn):
             try:
@@ -127,16 +150,33 @@ class LinkDialog(tk.Toplevel):
                 cmd = downloader.find_ytdlp() or downloader.fetch_ytdlp(status)
                 downloader.update_if_due(cmd, status)
                 status("Finding the video...", None)
+                chosen = item
+                if chosen is None:
+                    videos = downloader.list_videos(cmd, url, ffmpeg, login)
+                    if self.cancelled:
+                        return
+                    if videos:  # several on the page: ask which
+                        later(lambda: self._choose(url, folder, videos))
+                        return
                 path = downloader.run(
-                    downloader.build_command(cmd, url, folder, quality, ffmpeg),
+                    downloader.build_command(cmd, url, folder, quality, ffmpeg, login, chosen),
                     lambda frac, text: status(text, frac), lambda: self.cancelled)
                 later(lambda: self._finished(path, None))
             except downloader.DownloadError as e:
                 later(lambda msg=str(e): self._finished(None, msg))
-            except OSError as e:
+            except (OSError, subprocess.SubprocessError) as e:
                 later(lambda msg=f"Couldn't run yt-dlp: {e}": self._finished(None, msg))
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _choose(self, url, folder, videos):
+        """The page has several videos: list them and download the one picked."""
+        self.busy = False
+        if self.cancelled or not self.winfo_exists():
+            return
+        self.go_btn.config(state="normal")
+        self._set_status(f"This page has {len(videos)} videos. Pick one.", 0)
+        ChooseVideo(self, videos, lambda n: self._download(url, folder, n))
 
     def _finished(self, path, error):
         self.busy = False
@@ -153,3 +193,60 @@ class LinkDialog(tk.Toplevel):
     def close(self):
         self.cancelled = self.busy  # stops a download that's under way
         self.destroy()
+
+
+def _length(seconds):
+    if not seconds:
+        return "?"
+    s = int(round(seconds))
+    return f"{s // 3600}:{s // 60 % 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
+
+
+class ChooseVideo(tk.Toplevel):
+    """Pick one of the videos on a page. on_pick(number) gets the one chosen."""
+
+    def __init__(self, parent, videos, on_pick):
+        super().__init__(parent)
+        self.on_pick = on_pick
+        self.title("Which video?")
+        self.transient(parent)
+        theme.style_window(self)
+        main = ttk.Frame(self, padding=12)
+        main.pack(fill="both", expand=True)
+        ttk.Label(main, text="This page has several videos. The longest is usually the main "
+                             "one; the short ones are often previews of other videos.",
+                  style="Muted.TLabel", wraplength=520, justify="left").pack(anchor="w")
+        table = ttk.Frame(main)
+        table.pack(fill="both", expand=True, pady=8)
+        self.tree = ttk.Treeview(table, columns=("length", "size", "name"), show="headings",
+                                 height=min(12, len(videos)), selectmode="browse")
+        for col, text, width, anchor in (("length", "Length", 70, "e"), ("size", "Size", 60, "e"),
+                                         ("name", "Video", 400, "w")):
+            self.tree.heading(col, text=text)
+            self.tree.column(col, width=width, anchor=anchor, stretch=col == "name")
+        bar = ttk.Scrollbar(table, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=bar.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        bar.pack(side="left", fill="y")
+        for number, name, seconds, height in videos:
+            self.tree.insert("", "end", iid=str(number), values=(
+                _length(seconds), f"{height}p" if height else "", name))
+        longest = max(videos, key=lambda v: v[2] or 0)
+        self.tree.selection_set(str(longest[0]))
+        self.tree.see(str(longest[0]))
+        self.tree.bind("<Double-1>", lambda e: self._pick())
+        buttons = ttk.Frame(main)
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side="right")
+        ttk.Button(buttons, text="Download this one", command=self._pick).pack(
+            side="right", padx=(0, 6))
+        self.bind("<Return>", lambda e: self._pick())
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.tree.focus_set()
+        self.grab_set()
+
+    def _pick(self):
+        sel = self.tree.selection()
+        if sel:
+            self.destroy()
+            self.on_pick(int(sel[0]))

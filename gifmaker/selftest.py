@@ -188,9 +188,26 @@ def run(report_path):
             url = f"http://127.0.0.1:{server.server_port}/{urllib.parse.quote(name)}"
             path = downloader.run(downloader.build_command(cmd, url, folder, "720p", exe))
             assert os.path.dirname(path) == folder and "\U0001F600" in path, path
+            # a page with the main video and a shorter preview: listed, and only the
+            # one picked comes down
+            preview = os.path.join(os.path.dirname(src), "preview.mp4")
+            subprocess.run([exe, "-y", "-loglevel", "error", "-i", src, "-t", "0.5", preview],
+                           check=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            with open(os.path.join(os.path.dirname(src), "page.html"), "w") as f:
+                f.write('<html><title>Page</title><video src="preview.mp4"></video>'
+                        '<video src="in.mp4"></video></html>')
+            page = f"http://127.0.0.1:{server.server_port}/page.html"
+            videos = downloader.list_videos(cmd, page, exe)
+            assert [round(v[2] or 0) for v in videos] == [0, 2], videos
+            folder2 = os.path.join(os.path.dirname(src), "picked")
+            picked = downloader.run(downloader.build_command(cmd, page, folder2, "720p", exe,
+                                                            item=2))
+            assert os.listdir(folder2) == [os.path.basename(picked)], os.listdir(folder2)
+            assert round(ff.probe(exe, picked).duration) == 2, picked
         finally:
             server.shutdown()
-        return f"yt-dlp {version.stdout.strip()}, downloaded {os.path.getsize(path)} bytes"
+        return (f"yt-dlp {version.stdout.strip()}, downloaded {os.path.getsize(path)} bytes; "
+                f"a page with {len(videos)} videos listed and the main one picked")
 
     def pictures():
         made = []

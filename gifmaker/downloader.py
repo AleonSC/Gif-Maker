@@ -15,6 +15,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import threading
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -132,12 +134,110 @@ def update_if_due(cmd, on_status=None):
     _mark_checked()
 
 
-def build_command(cmd, url, folder, quality, ffmpeg):
-    """The yt-dlp command line that downloads url as an mp4 into folder."""
+# Browsers yt-dlp can borrow a login from (label -> its name for --cookies-from-browser).
+BROWSERS = {"Firefox": "firefox", "Chrome": "chrome", "Edge": "edge", "Brave": "brave",
+            "Opera": "opera", "Vivaldi": "vivaldi", "Chromium": "chromium"}
+LIST_LIMIT = 40  # videos listed from one page at most
+
+
+def _login(browser):
+    name = BROWSERS.get(browser)
+    return ["--cookies-from-browser", name] if name else []
+
+
+def list_videos(cmd, url, ffmpeg, browser=None):
+    """When the page at url holds several videos (e.g. the main one and previews of
+    others), [(number, name, seconds or None, height or None)] for each; [] when it's
+    just one. Raises DownloadError."""
+    proc = subprocess.run(
+        cmd + ["-J", "--flat-playlist", "--no-playlist", "--no-warnings",
+               "-I", f"1:{LIST_LIMIT}", *_login(browser), normalize(url)],
+        capture_output=True, timeout=180, creationflags=_NO_WINDOW, stdin=subprocess.DEVNULL,
+        env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1"))
+    out = proc.stdout.decode("utf-8", "replace")
+    if proc.returncode != 0:
+        errors = [l[6:].strip() for l in proc.stderr.decode("utf-8", "replace").splitlines()
+                  if l.startswith("ERROR:")]
+        raise DownloadError(_plain(errors[-1] if errors else f"yt-dlp stopped (code {proc.returncode})."))
+    try:
+        data = json.loads(out)
+    except ValueError:
+        return []
+    entries = [e for e in (data.get("entries") or []) if isinstance(e, dict)] \
+        if data.get("_type") == "playlist" else []
+    if len(entries) < 2:
+        return []
+    videos = [[i, _entry_name(e), e.get("duration"), e.get("height")]
+              for i, e in enumerate(entries, 1)]
+    # Videos found in a page's HTML come without a length: ask ffmpeg (all at once).
+    missing = [(v, e) for v, e in zip(videos, entries) if not v[2] and _entry_url(e)]
+    threads = [threading.Thread(target=_measure, args=(ffmpeg, e, v), daemon=True)
+               for v, e in missing]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=25)
+    return [tuple(v) for v in videos]
+
+
+def _entry_url(entry):
+    url = entry.get("url")
+    if not url and entry.get("formats"):
+        url = entry["formats"][-1].get("url")
+    return url if isinstance(url, str) and url.startswith("http") else None
+
+
+def _entry_name(entry):
+    """The file name in the video's link (often telling: "trailer", "preview"), or its title."""
+    url = _entry_url(entry) or ""
+    tail = urllib.parse.unquote(urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1])
+    title = str(entry.get("title") or "")
+    if tail and "." in tail and not tail.lower().startswith(("index", "master", "playlist")):
+        return tail
+    return title or tail or "video"
+
+
+def _measure(ffmpeg, entry, video):
+    """Fill in video's length and height by having ffmpeg open its link."""
+    headers = dict(entry.get("http_headers") or {})
+    cookies = _cookie_header(entry.get("cookies"))
+    if cookies:
+        headers["Cookie"] = cookies
+    cmd = [ffmpeg, "-hide_banner"]
+    if headers:
+        cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
+    try:
+        err = subprocess.run(cmd + ["-i", _entry_url(entry)], capture_output=True, timeout=20,
+                             creationflags=_NO_WINDOW, stdin=subprocess.DEVNULL).stderr
+    except (OSError, subprocess.SubprocessError):
+        return
+    text = err.decode("utf-8", "replace")
+    m = re.search(r"Duration: (\d+):(\d+):(\d+(?:\.\d+)?)", text)
+    if m:
+        video[2] = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+    m = re.search(r"Video: .*?, (\d{2,5})x(\d{2,5})", text)
+    if m and not video[3]:
+        video[3] = int(m.group(2))
+
+
+def _cookie_header(cookies):
+    """yt-dlp's cookies field ("a=1; Domain=...; b=2; ...") as a Cookie header."""
+    if not isinstance(cookies, str):
+        return ""
+    skip = {"domain", "path", "expires", "max-age", "samesite", "secure", "httponly"}
+    pairs = [p.strip() for p in cookies.split(";")]
+    return "; ".join(p for p in pairs if "=" in p and p.split("=", 1)[0].strip().lower() not in skip)
+
+
+def build_command(cmd, url, folder, quality, ffmpeg, browser=None, item=None):
+    """The yt-dlp command line that downloads url as an mp4 into folder: only video
+    number item when the page has several (see list_videos), and logged in as in
+    browser if given."""
     # Where yt-dlp writes the saved file's path, as UTF-8: printed to the pipe it goes
     # through the Windows code page, which mangles emoji and many accented letters.
     record = os.path.join(tempfile.gettempdir(), f"gifmaker-saved-{uuid.uuid4().hex}.txt")
     return cmd + [
+        *_login(browser), *(["-I", str(item)] if item else []),
         "--print-to-file", "after_move:%(filepath)s", record,
         "--no-playlist", "--newline", "--progress", "--no-colors", "--windows-filenames",
         "--ffmpeg-location", ffmpeg,
@@ -254,6 +354,14 @@ def _plain(reason):
     if "sign in to confirm" in low or ("age" in low and "restrict" in low):
         return ("The site wants you to sign in first (age-restricted or bot check), so it "
                 "can't be downloaded this way. " + reason[:200])
+    if "cookie" in low and ("decrypt" in low or "dpapi" in low or "app-bound" in low):
+        return ("Couldn't use that browser's login: Chrome and Edge now lock it away from "
+                "other programs. Log in to the site in Firefox and pick Firefox instead.")
+    if "cookie" in low and ("could not copy" in low or "permission" in low or "locked" in low):
+        return ("Couldn't read that browser's login while it's open. Close the browser "
+                "completely and try again (or use Firefox, which works while open).")
+    if "could not find" in low and "cookies database" in low:
+        return "That browser isn't installed, or has no login saved. Pick the one you log in with."
     if "drm" in low:
         return "That video is copy-protected (DRM), so it can't be downloaded."
     if "private video" in low or "video unavailable" in low or "removed" in low:
