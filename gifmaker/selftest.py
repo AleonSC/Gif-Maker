@@ -173,6 +173,13 @@ def run(report_path):
                 except ConnectionError:
                     pass
 
+            def do_GET(self):
+                # like video hosts that only serve visitors coming from their site
+                if "/locked/" in self.path and "page2" not in (self.headers.get("Referer") or ""):
+                    self.send_error(403)
+                    return
+                super().do_GET()
+
         cmd = downloader.find_ytdlp() or downloader.fetch_ytdlp()
         version = subprocess.run(cmd + ["--version"], capture_output=True, text=True,
                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -197,17 +204,42 @@ def run(report_path):
                 f.write('<html><title>Page</title><video src="preview.mp4"></video>'
                         '<video src="in.mp4"></video></html>')
             page = f"http://127.0.0.1:{server.server_port}/page.html"
-            videos = downloader.list_videos(cmd, page, exe)
+            _title, videos = downloader.list_videos(cmd, page, exe)
             assert [round(v[2] or 0) for v in videos] == [0, 2], videos
             folder2 = os.path.join(os.path.dirname(src), "picked")
             picked = downloader.run(downloader.build_command(cmd, page, folder2, "720p", exe,
                                                             item=2))
             assert os.listdir(folder2) == [os.path.basename(picked)], os.listdir(folder2)
             assert round(ff.probe(exe, picked).duration) == 2, picked
+
+            # a page whose main video is a stream that its server only gives to visitors
+            # from the page (which yt-dlp leaves out of its list): found in the page
+            locked = os.path.join(os.path.dirname(src), "locked", "Main Video", "hls")
+            os.makedirs(locked)
+            subprocess.run([exe, "-y", "-loglevel", "error", "-i", src, "-c:v", "libx264",
+                            "-c:a", "aac", "-f", "hls", "-hls_playlist_type", "vod",
+                            "-master_pl_name", "master.m3u8", os.path.join(locked, "v.m3u8")],
+                           check=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            base = f"http://127.0.0.1:{server.server_port}"
+            with open(os.path.join(os.path.dirname(src), "page2.html"), "w") as f:
+                f.write(f'<html><title>Page Two</title><video src="preview.mp4"></video>'
+                        f'<video><source src="{base}/locked/Main%20Video/hls/master.m3u8" '
+                        f'type="application/x-mpegURL"></video></html>')
+            title, videos = downloader.list_videos(cmd, base + "/page2.html", exe)
+            streams = [v for v in videos if isinstance(v[0], str)]
+            assert len(streams) == 1 and round(streams[0][2] or 0) == 2 and \
+                streams[0][1] == "Main Video (stream)", videos
+            folder3 = os.path.join(os.path.dirname(src), "stream")
+            got = downloader.run(downloader.build_command(cmd, base + "/page2.html", folder3,
+                                                         "720p", exe, item=streams[0][0],
+                                                         title=title))
+            assert os.path.basename(got) == "Page Two.mp4", got
+            assert round(ff.probe(exe, got).duration) == 2, got
         finally:
             server.shutdown()
         return (f"yt-dlp {version.stdout.strip()}, downloaded {os.path.getsize(path)} bytes; "
-                f"a page with {len(videos)} videos listed and the main one picked")
+                f"pages with several videos listed and the main one picked, including a "
+                f"stream only served to the page")
 
     def pictures():
         made = []

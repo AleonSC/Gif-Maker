@@ -7,6 +7,7 @@ from source can use an installed yt-dlp instead (`pip install yt-dlp`).
 """
 
 import collections
+import html
 import json
 import os
 import re
@@ -138,6 +139,8 @@ def update_if_due(cmd, on_status=None):
 BROWSERS = {"Firefox": "firefox", "Chrome": "chrome", "Edge": "edge", "Brave": "brave",
             "Opera": "opera", "Vivaldi": "vivaldi", "Chromium": "chromium"}
 LIST_LIMIT = 40  # videos listed from one page at most
+BROWSER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like "
+                 "Gecko) Chrome/130.0.0.0 Safari/537.36")
 
 
 def _login(browser):
@@ -146,38 +149,137 @@ def _login(browser):
 
 
 def list_videos(cmd, url, ffmpeg, browser=None):
-    """When the page at url holds several videos (e.g. the main one and previews of
-    others), [(number, name, seconds or None, height or None)] for each; [] when it's
-    just one. Raises DownloadError."""
-    proc = subprocess.run(
-        cmd + ["-J", "--flat-playlist", "--no-playlist", "--no-warnings",
-               "-I", f"1:{LIST_LIMIT}", *_login(browser), normalize(url)],
-        capture_output=True, timeout=180, creationflags=_NO_WINDOW, stdin=subprocess.DEVNULL,
-        env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1"))
-    out = proc.stdout.decode("utf-8", "replace")
-    if proc.returncode != 0:
+    """The videos on the page at url, for picking one: (page title, [[key, name,
+    seconds or None, height or None], ...]). key is the video's number for yt-dlp,
+    or the link of one GifMaker found in the page itself (see _scan). The list is
+    empty when url is simply one video. Raises DownloadError."""
+    folder = tempfile.mkdtemp(prefix="gifmaker-page-")
+    try:
+        proc = subprocess.run(
+            cmd + ["-J", "--flat-playlist", "--no-playlist", "--no-warnings",
+                   "-I", f"1:{LIST_LIMIT}", "--write-pages", *_login(browser),
+                   normalize(url)],
+            capture_output=True, timeout=180, creationflags=_NO_WINDOW, cwd=folder,
+            stdin=subprocess.DEVNULL, env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1"))
+        found = _scan(folder)
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+    data = None
+    if proc.returncode == 0:
+        try:
+            data = json.loads(proc.stdout.decode("utf-8", "replace"))
+        except ValueError:
+            pass
+    if data is None and not found:
         errors = [l[6:].strip() for l in proc.stderr.decode("utf-8", "replace").splitlines()
                   if l.startswith("ERROR:")]
         raise DownloadError(_plain(errors[-1] if errors else f"yt-dlp stopped (code {proc.returncode})."))
-    try:
-        data = json.loads(out)
-    except ValueError:
-        return []
+    data = data or {}
+    title = str(data.get("title") or "")
+    if data.get("_type") != "playlist":  # the page's one video, titled "Page title (1)"
+        title = re.sub(r" \(\d+\)$", "", title)
     entries = [e for e in (data.get("entries") or []) if isinstance(e, dict)] \
-        if data.get("_type") == "playlist" else []
-    if len(entries) < 2:
-        return []
+        if data.get("_type") == "playlist" else [data] if data else []
+    if data and data.get("_type") != "playlist" and data.get("extractor_key") not in _GENERIC:
+        return title, []  # a site yt-dlp knows, with one video: just download it
     videos = [[i, _entry_name(e), e.get("duration"), e.get("height")]
               for i, e in enumerate(entries, 1)]
+    measure = [(v, _entry_url(e), e.get("http_headers"), e.get("cookies"))
+               for v, e in zip(videos, entries) if not v[2] and _entry_url(e)]
+    # Links in the page yt-dlp left out: streams it couldn't open (servers that only
+    # serve visitors coming from their site), or players it doesn't know.
+    known = {_entry_url(e) for e in entries}
+    for link in found:
+        if link not in known and len(videos) < LIST_LIMIT:
+            video = [link, _link_name(link), None, None]
+            videos.append(video)
+            measure.append((video, link, None, None))
+    if len(videos) < 2 and not any(isinstance(v[0], str) for v in videos):
+        return title, []
+    links = [_entry_url(e) for e in entries] + [v[0] for v in videos[len(entries):]]
+    _tell_apart(videos, links)
     # Videos found in a page's HTML come without a length: ask ffmpeg (all at once).
-    missing = [(v, e) for v, e in zip(videos, entries) if not v[2] and _entry_url(e)]
-    threads = [threading.Thread(target=_measure, args=(ffmpeg, e, v), daemon=True)
-               for v, e in missing]
+    threads = [threading.Thread(target=_measure, args=(ffmpeg, link, url, headers, cookies, v),
+                                daemon=True) for v, link, headers, cookies in measure]
     for t in threads:
         t.start()
     for t in threads:
         t.join(timeout=25)
-    return [tuple(v) for v in videos]
+    return title, videos
+
+
+_MEDIA_LINK = re.compile(r"""https?:(?:\\?/){2}[^\s"'<>()]+?\.(?:m3u8|mpd|mp4|webm|m4v|mov)"""
+                         r"""(?:\?[^\s"'<>]*)?(?=["'\s<>]|$)""", re.I)
+
+
+def _scan(folder):
+    """Video links in the web page(s) yt-dlp saved in folder (--write-pages)."""
+    links = []
+    for name in sorted(os.listdir(folder)):
+        try:
+            with open(os.path.join(folder, name), "rb") as f:
+                text = f.read(8_000_000).decode("utf-8", "replace")
+        except OSError:
+            continue
+        if "<html" not in text[:5000].lower() and "<video" not in text.lower():
+            continue  # a playlist or other file it fetched, not a page
+        for m in _MEDIA_LINK.finditer(text):
+            link = html.unescape(m.group(0).replace("\\/", "/"))
+            if link not in links:
+                links.append(link)
+    return links
+
+
+def _from_page(url):
+    """Say the requests come from url's page, as a browser does: some video servers
+    only serve visitors coming from their own site."""
+    parts = urllib.parse.urlsplit(url)
+    if not parts.scheme.startswith("http"):
+        return []
+    return ["--referer", url, "--add-headers", f"Origin:{parts.scheme}://{parts.netloc}"]
+
+
+def _tell_apart(videos, links):
+    """Videos with the same name (every preview called "preview.mp4") get the part of
+    their link that differs put in front: "Some-Model \u00B7 preview.mp4"."""
+    groups = collections.defaultdict(list)
+    for i, v in enumerate(videos):
+        groups[v[1]].append(i)
+    for same in groups.values():
+        if len(same) < 2:
+            continue
+        paths = [[urllib.parse.unquote(p) for p in urllib.parse.urlsplit(links[i] or "").path.split("/")
+                  if p] for i in same]
+        for depth in range(max(len(p) for p in paths)):
+            parts = [p[depth] if depth < len(p) else "" for p in paths]
+            if len(set(parts)) > 1:
+                for i, part in zip(same, parts):
+                    if part:
+                        videos[i][1] = f"{part} \u00B7 {videos[i][1]}"
+                break
+
+
+_GENERIC_PARTS = {"hls", "dash", "video", "videos", "media", "stream", "streams", "vod",
+                  "master", "index", "playlist", "manifest"}
+
+
+def _link_name(link):
+    """A readable name for a video link: its file name, or for a stream (".../Some
+    Video/hls/master.m3u8") the folder that names it."""
+    path = urllib.parse.unquote(urllib.parse.urlsplit(link).path)
+    parts = [p for p in path.split("/") if p]
+    if not parts:
+        return link
+    tail = parts[-1]
+    if not tail.lower().startswith(("index", "master", "playlist", "manifest")):
+        return tail
+    for part in reversed(parts[:-1]):
+        if part.lower() not in _GENERIC_PARTS and not re.fullmatch(r"\d+p?", part):
+            return f"{part} (stream)"
+    return tail
+
+
+_GENERIC = {"Generic", "HTML5MediaEmbed"}  # yt-dlp read the page itself (no site support)
 
 
 def _entry_url(entry):
@@ -189,35 +291,36 @@ def _entry_url(entry):
 
 def _entry_name(entry):
     """The file name in the video's link (often telling: "trailer", "preview"), or its title."""
-    url = _entry_url(entry) or ""
-    tail = urllib.parse.unquote(urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1])
-    title = str(entry.get("title") or "")
-    if tail and "." in tail and not tail.lower().startswith(("index", "master", "playlist")):
-        return tail
-    return title or tail or "video"
+    url = _entry_url(entry)
+    name = _link_name(url) if url else ""
+    return name if name and "." in name or "(stream)" in name else \
+        str(entry.get("title") or name or "video")
 
 
-def _measure(ffmpeg, entry, video):
+def _measure(ffmpeg, link, page, headers, cookies, video):
     """Fill in video's length and height by having ffmpeg open its link."""
-    headers = dict(entry.get("http_headers") or {})
-    cookies = _cookie_header(entry.get("cookies"))
-    if cookies:
-        headers["Cookie"] = cookies
-    cmd = [ffmpeg, "-hide_banner"]
-    if headers:
-        cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
+    headers = dict(headers or {})
+    headers.setdefault("User-Agent", BROWSER_AGENT)
+    headers.setdefault("Referer", page)
+    parts = urllib.parse.urlsplit(page)
+    headers.setdefault("Origin", f"{parts.scheme}://{parts.netloc}")
+    cookie = _cookie_header(cookies)
+    if cookie:
+        headers["Cookie"] = cookie
+    cmd = [ffmpeg, "-hide_banner", "-headers",
+           "".join(f"{k}: {v}\r\n" for k, v in headers.items()), "-i", link]
     try:
-        err = subprocess.run(cmd + ["-i", _entry_url(entry)], capture_output=True, timeout=20,
-                             creationflags=_NO_WINDOW, stdin=subprocess.DEVNULL).stderr
+        err = subprocess.run(cmd, capture_output=True, timeout=20, creationflags=_NO_WINDOW,
+                             stdin=subprocess.DEVNULL).stderr
     except (OSError, subprocess.SubprocessError):
         return
     text = err.decode("utf-8", "replace")
     m = re.search(r"Duration: (\d+):(\d+):(\d+(?:\.\d+)?)", text)
     if m:
         video[2] = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
-    m = re.search(r"Video: .*?, (\d{2,5})x(\d{2,5})", text)
-    if m and not video[3]:
-        video[3] = int(m.group(2))
+    heights = [int(h) for h in re.findall(r"Video: .*?, \d{2,5}x(\d{2,5})", text)]
+    if heights and not video[3]:
+        video[3] = max(heights)  # a stream offers several sizes: the best
 
 
 def _cookie_header(cookies):
@@ -229,21 +332,30 @@ def _cookie_header(cookies):
     return "; ".join(p for p in pairs if "=" in p and p.split("=", 1)[0].strip().lower() not in skip)
 
 
-def build_command(cmd, url, folder, quality, ffmpeg, browser=None, item=None):
-    """The yt-dlp command line that downloads url as an mp4 into folder: only video
-    number item when the page has several (see list_videos), and logged in as in
-    browser if given."""
+def build_command(cmd, url, folder, quality, ffmpeg, browser=None, item=None, title=None):
+    """The yt-dlp command line that downloads url as an mp4 into folder, logged in as in
+    browser if given. item picks one video from a page with several (see list_videos):
+    its number, or a link found in the page, downloaded as coming from that page and
+    named after title."""
+    name = "%(title).120B [%(id)s].%(ext)s"
+    extra = ["-I", str(item)] if isinstance(item, int) else []
+    if isinstance(item, str):
+        extra = _from_page(url)
+        url = item
+        if title:
+            clean = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", title).strip(" .")[:120]
+            name = clean.replace("%", "%%") + ".%(ext)s"
     # Where yt-dlp writes the saved file's path, as UTF-8: printed to the pipe it goes
     # through the Windows code page, which mangles emoji and many accented letters.
     record = os.path.join(tempfile.gettempdir(), f"gifmaker-saved-{uuid.uuid4().hex}.txt")
     return cmd + [
-        *_login(browser), *(["-I", str(item)] if item else []),
+        *_login(browser), *extra,
         "--print-to-file", "after_move:%(filepath)s", record,
         "--no-playlist", "--newline", "--progress", "--no-colors", "--windows-filenames",
         "--ffmpeg-location", ffmpeg,
         "-f", "bv*+ba/b", "-S", QUALITIES.get(quality, QUALITIES["Best"]),
         "--merge-output-format", "mp4",
-        "-o", os.path.join(folder, "%(title).120B [%(id)s].%(ext)s"),
+        "-o", os.path.join(folder, name),
         "--progress-template", "download:PROGRESS %(progress._percent_str)s|"
                                "%(progress._speed_str)s|%(progress._eta_str)s",
         "--print", "after_move:SAVED %(filepath)s",

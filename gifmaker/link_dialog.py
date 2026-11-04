@@ -127,9 +127,9 @@ class LinkDialog(tk.Toplevel):
         theme.save_setting("download_login", self.login.get())
         self._download(url, folder, item=None)
 
-    def _download(self, url, folder, item):
-        """Download url (only video number item, if the page has several; None means
-        list them first and ask if there are several)."""
+    def _download(self, url, folder, item, title=None):
+        """Download url: only video item (as list_videos gives it) if the page has
+        several; None means look at the page first and ask if there are several."""
         self.busy = True
         self.go_btn.config(state="disabled")
         self._set_status("Starting...", None)
@@ -150,16 +150,20 @@ class LinkDialog(tk.Toplevel):
                 cmd = downloader.find_ytdlp() or downloader.fetch_ytdlp(status)
                 downloader.update_if_due(cmd, status)
                 status("Finding the video...", None)
-                chosen = item
+                chosen, name = item, title
                 if chosen is None:
-                    videos = downloader.list_videos(cmd, url, ffmpeg, login)
+                    name, videos = downloader.list_videos(cmd, url, ffmpeg, login)
                     if self.cancelled:
                         return
-                    if videos:  # several on the page: ask which
-                        later(lambda: self._choose(url, folder, videos))
+                    if len(videos) > 1:  # several on the page: ask which
+                        later(lambda: self._choose(url, folder, videos, name))
                         return
+                    if videos:  # just one, found in the page itself
+                        chosen = videos[0][0]
+                    status("Starting the download...", None)
                 path = downloader.run(
-                    downloader.build_command(cmd, url, folder, quality, ffmpeg, login, chosen),
+                    downloader.build_command(cmd, url, folder, quality, ffmpeg, login, chosen,
+                                             name),
                     lambda frac, text: status(text, frac), lambda: self.cancelled)
                 later(lambda: self._finished(path, None))
             except downloader.DownloadError as e:
@@ -169,14 +173,14 @@ class LinkDialog(tk.Toplevel):
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _choose(self, url, folder, videos):
+    def _choose(self, url, folder, videos, title):
         """The page has several videos: list them and download the one picked."""
         self.busy = False
         if self.cancelled or not self.winfo_exists():
             return
         self.go_btn.config(state="normal")
         self._set_status(f"This page has {len(videos)} videos. Pick one.", 0)
-        ChooseVideo(self, videos, lambda n: self._download(url, folder, n))
+        ChooseVideo(self, videos, lambda key: self._download(url, folder, key, title))
 
     def _finished(self, path, error):
         self.busy = False
@@ -203,7 +207,7 @@ def _length(seconds):
 
 
 class ChooseVideo(tk.Toplevel):
-    """Pick one of the videos on a page. on_pick(number) gets the one chosen."""
+    """Pick one of the videos on a page. on_pick(key) gets the one chosen."""
 
     def __init__(self, parent, videos, on_pick):
         super().__init__(parent)
@@ -228,12 +232,13 @@ class ChooseVideo(tk.Toplevel):
         self.tree.configure(yscrollcommand=bar.set)
         self.tree.pack(side="left", fill="both", expand=True)
         bar.pack(side="left", fill="y")
-        for number, name, seconds, height in videos:
-            self.tree.insert("", "end", iid=str(number), values=(
+        self.keys = [v[0] for v in videos]
+        for i, (_key, name, seconds, height) in enumerate(videos):
+            self.tree.insert("", "end", iid=str(i), values=(
                 _length(seconds), f"{height}p" if height else "", name))
-        longest = max(videos, key=lambda v: v[2] or 0)
-        self.tree.selection_set(str(longest[0]))
-        self.tree.see(str(longest[0]))
+        longest = str(max(range(len(videos)), key=lambda i: videos[i][2] or 0))
+        self.tree.selection_set(longest)
+        self.tree.see(longest)
         self.tree.bind("<Double-1>", lambda e: self._pick())
         buttons = ttk.Frame(main)
         buttons.pack(fill="x")
@@ -249,4 +254,4 @@ class ChooseVideo(tk.Toplevel):
         sel = self.tree.selection()
         if sel:
             self.destroy()
-            self.on_pick(int(sel[0]))
+            self.on_pick(self.keys[int(sel[0])])
