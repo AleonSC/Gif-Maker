@@ -460,6 +460,8 @@ class GifMakerApp:
                 ("Close", self.close_file, "Close the video and start again"),
                 ("Delete...", self.delete_file,
                  "Delete this video and open the next one in the folder  (Delete key)"),
+                ("Show in folder", self.reveal_current,
+                 "Open its folder in Explorer with it selected  (Ctrl+E)"),
                 ("Sort keys...", self.open_sort_keys,
                  lambda: "Give folders a key: pressing it moves the file you're viewing "
                          "there and opens the next one  (Ctrl+Z undoes)\n\n"
@@ -694,6 +696,7 @@ class GifMakerApp:
         self.root.bind("<F5>", lambda e: self.toggle_slideshow())
         self.root.bind("<Key>", self._key_sort)  # the sort keys (more specific keys win)
         self.root.bind("<Control-z>", lambda e: self._key_set(e, self.undo_sort))
+        self.root.bind("<Control-e>", lambda e: self.reveal_current())
         self._update_nav()
         # Let the window be shrunk until the video is small, but no narrower than
         # the play bar (and keep its size from now on, whatever the labels say).
@@ -1395,6 +1398,16 @@ class GifMakerApp:
         self.sections = []  # already confirmed, so don't ask again when opening the next one
         self.clear_video()  # stops playback and everything else reading the file
         self._delete_when_free(path, after, tries=15)
+
+    def reveal_current(self):
+        """Open the open file's folder in Explorer with the file selected."""
+        if not self.video_path:
+            self.status.set("Open a video or picture first.")
+            return
+        if not os.path.exists(self.video_path):
+            self.status.set(f"{os.path.basename(self.video_path)} isn't there any more.")
+            return
+        show_in_folder(self.video_path)
 
     # -------------------------------------------------------- sort keys
     def open_sort_keys(self):

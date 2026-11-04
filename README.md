@@ -76,6 +76,9 @@ the way while recording, and a small bar shows the time with **Stop and open** a
 Videos\GifMaker recordings unless you pick another folder) and opens straight away, ready
 to clip into GIFs. Hiding the bar from the video needs Windows 10 (version 2004) or later.
 
+**Show in folder** (Ctrl+E) opens the folder of the file you're viewing in Explorer, with
+the file selected.
+
 **Sort keys** give folders a key each: click *Sort keys...*, add a folder and press a
 letter, a number or a spare F key for it. Then, while viewing a file, pressing that key moves
 it into that folder and opens the next one (the Files panel updates too). A file with the
