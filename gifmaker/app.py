@@ -30,6 +30,7 @@ from .file_browser import FileBrowser
 from .grid_player import GridPlayer
 from .link_dialog import LinkDialog
 from .rename_tool import RenameTool
+from .screen_recorder import RecorderWindow
 from .player import Player
 from .timeline import Timeline
 from .tooltip import Tooltip
@@ -106,6 +107,7 @@ class GifMakerApp:
         self.fullscreen = False
         self.grid_window = None
         self.rename_window = None
+        self.recorder_window = None
         self.view_w, self.view_h = PREVIEW_W, PREVIEW_H  # size of the video area
         self.resize_job = None
         self.listing = None  # (folder, its modified time, paths, {normcased path: index}, when)
@@ -190,6 +192,20 @@ class GifMakerApp:
         self.grid_window = GridPlayer(self, OPEN_TYPES)
         if self.video_path:
             self.grid_window.after(100, lambda: self.grid_window and self.grid_window.add(self.video_path))
+
+    def open_recorder(self):
+        if self.recorder_window is not None and self.recorder_window.winfo_exists():
+            self.recorder_window.deiconify()
+            self.recorder_window.lift()
+            return
+        self.recorder_window = RecorderWindow(self, self._recorded)
+
+    def _recorded(self, path, note):
+        self.root.deiconify()
+        self.root.lift()
+        if not self.busy:
+            self.open_video(path)
+        self.status.set(f"Recorded {os.path.basename(path)}{note}.")
 
     def open_rename_tool(self):
         """Open the folder renaming tool (on the current video's folder), or bring it forward."""
@@ -406,6 +422,8 @@ class GifMakerApp:
             self.grid_window.close()
         if self.rename_window is not None:
             self.rename_window.close()  # stops it reading pictures' colours
+        if self.recorder_window is not None:
+            self.recorder_window.shutdown()  # stops ffmpeg recording
         self.player.close()
         self.root.destroy()
 
@@ -452,6 +470,10 @@ class GifMakerApp:
         ttk.Checkbutton(top, text="Dark", variable=self.dark_mode,
                         command=self._toggle_dark).pack(side="right")
         ttk.Separator(top, orient="vertical").pack(side="right", fill="y", padx=10, pady=3)
+        record = ttk.Button(top, text="Record screen", command=self.open_recorder)
+        record.pack(side="right", padx=(0, 4))
+        Tooltip(record, "Record the screen (or part of it), with the computer's sound, "
+                        "then open the video here to make GIFs from it")
         grid = ttk.Button(top, text="Grid player", command=self.open_grid)
         grid.pack(side="right")
         Tooltip(grid, "Play several videos (and show pictures) at once, each in a panel you can "

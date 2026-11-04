@@ -69,6 +69,13 @@ each picture shows (2 seconds to a minute), whether videos play to the end, shuf
 whether it starts over at the end. The arrows still work while it runs; F5 or Esc stops it.
 Pair it with fullscreen (F11).
 
+**Record screen** records the whole screen (the one GifMaker is on) or an area you drag
+out, with the sound the computer plays, at 15 to 60 frames a second. GifMaker steps out of
+the way while recording, and a small bar shows the time with **Stop and open** and
+**Discard**; the bar isn't in the video. The recording is saved as an MP4 (in
+Videos\GifMaker recordings unless you pick another folder) and opens straight away, ready
+to clip into GIFs. Hiding the bar from the video needs Windows 10 (version 2004) or later.
+
 **Sort keys** give folders a key each: click *Sort keys...*, add a folder and press a
 letter, a number or a spare F key for it. Then, while viewing a file, pressing that key moves
 it into that folder and opens the next one (the Files panel updates too). A file with the

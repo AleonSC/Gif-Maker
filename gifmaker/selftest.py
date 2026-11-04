@@ -205,6 +205,38 @@ def run(report_path):
             made.append(ext)
         return "opened " + " ".join(made)
 
+    def screen_recording():
+        # a second of the top-left of the screen, as the Record screen button does
+        # (with the computer's sound if there's anything to record it from)
+        import queue
+        import time
+        from . import screen_recorder as rec
+        from . import ui_thread
+
+        why_not = rec.sound_available()
+        if sys.platform == "win32":
+            import pyaudiowpatch  # noqa: F401  (must be in the build either way)
+        out = os.path.join(tempfile.mkdtemp(), "Recording.mp4")
+        done = []
+        r = rec.Recording(exe, (0, 0, 320, 240), 30, True, why_not is None, out,
+                          lambda path, error: done.append((path, error)))
+        r.start()
+        time.sleep(1.5)
+        r.stop()
+        deadline = time.time() + 30
+        while not done and time.time() < deadline:
+            try:
+                ui_thread._calls.get(timeout=0.5)()
+            except queue.Empty:
+                pass
+        assert done, "never finished"
+        path, error = done[0]
+        assert path and not error, error
+        info = ff.probe(exe, path)
+        assert (info.width, info.height) == (320, 240) and 0.8 < info.duration < 3, info
+        sound = "with sound" if info.has_audio else f"no sound ({why_not or r.sound_error})"
+        return f"{info.duration:.1f} s at {info.width}x{info.height}, {sound}"
+
     check("ffmpeg", ffmpeg)
     check("source video", source)
     check("gif", gif)
@@ -219,6 +251,7 @@ def run(report_path):
     check("drag and drop", drag_and_drop)
     check("dark mode", dark_mode)
     check("download from a link", link_download)
+    check("screen recording", screen_recording)
     with open(report_path, "w", encoding="utf-8") as f:
         f.write("\n".join(results) + "\n")
     return 0 if all(r.startswith("ok") for r in results) else 1

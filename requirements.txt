@@ -1,3 +1,4 @@
 imageio-ffmpeg==0.6.0
 tkinterdnd2==0.4.2
 sounddevice==0.5.1
+PyAudioWPatch==0.2.12.9; sys_platform == "win32"
