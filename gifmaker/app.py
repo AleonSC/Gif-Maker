@@ -20,6 +20,7 @@ from tkinter import filedialog, font, messagebox, ttk
 from . import ffmpeg_tools as ff
 from . import downloader
 from . import files
+from . import picture_edit as pe
 from . import raw_photos
 from . import single_instance
 from . import sort_keys
@@ -128,6 +129,8 @@ class GifMakerApp:
         self.last_sort = None  # (from, to) of the last file sorted, for Ctrl+Z
         self.zoom_job = None
         self.pan = None
+        self.pic_edit = dict(pe.NO_EDIT)  # rotate / flip / crop shown, not yet saved
+        self.crop_box = None  # a picture_edit.CropBox while cropping
 
         self.player = Player(root, ffmpeg, self._on_play_frame, self._on_play_end)
         self.play_clip = False  # looping the start..end range rather than playing on
@@ -562,7 +565,8 @@ class GifMakerApp:
             self.canvas.bind(seq, self._wheel_zoom)
         self.canvas.bind("<ButtonPress-1>", self._pan_start)
         self.canvas.bind("<B1-Motion>", self._pan)
-        self.canvas.bind("<ButtonRelease-1>", lambda e: setattr(self, "pan", None))
+        self.canvas.bind("<ButtonRelease-1>", self._pan_end)
+        self.canvas.bind("<Motion>", self._canvas_hover)
         self.canvas.bind("<Button-2>", lambda e: self.reset_zoom())
         self.canvas.bind("<Configure>", self._on_view_resize)
         self.canvas_text = self.canvas.create_text(
@@ -682,6 +686,45 @@ class GifMakerApp:
         self.section_label = ttk.Label(sec, style="Muted.TLabel", width=1)
         self.section_label.pack(side="left", fill="x", expand=True)
 
+        # Turning and cropping a picture (shown in place of the clip rows).
+        pic = self.pic_bar = ttk.Frame(main)
+        ttk.Label(pic, text="Picture", style="Head.TLabel").pack(side="left", padx=(0, 12))
+        self.pic_tools = ttk.Frame(pic)
+        self.pic_tools.pack(side="left")
+        for text, command, tip in (
+                ("⟲ Left", lambda: self.rotate_picture(-90),
+                 "Turn it a quarter to the left  (Ctrl+Shift+R)"),
+                ("⟳ Right", lambda: self.rotate_picture(90),
+                 "Turn it a quarter to the right  (Ctrl+R)"),
+                ("Flip", self.flip_picture, "Mirror it left to right"),
+                ("Crop", self.start_crop, "Drag a box on the picture to keep just that part"),
+                ("Reset", self.reset_picture_edits, "Undo the turning and cropping")):
+            button = ttk.Button(pic, text=text, command=command)
+            button.pack(in_=self.pic_tools, side="left", padx=(0, 4))
+            Tooltip(button, tip)
+        self.crop_tools = ttk.Frame(pic)  # shown instead while cropping
+        ttk.Label(self.crop_tools, text="Shape").pack(side="left", padx=(0, 4))
+        self.crop_aspect = tk.StringVar(value="Free")
+        aspect = ttk.Combobox(self.crop_tools, textvariable=self.crop_aspect, state="readonly",
+                              values=list(pe.ASPECTS), width=9)
+        aspect.pack(side="left", padx=(0, 8))
+        aspect.bind("<<ComboboxSelected>>",
+                    lambda e: self.crop_box and self.crop_box.set_aspect(self.crop_aspect.get()))
+        done = ttk.Button(self.crop_tools, text="✓ Done", command=self.finish_crop)
+        done.pack(side="left", padx=(0, 4))
+        Tooltip(done, "Keep this crop  (Enter)")
+        ttk.Button(self.crop_tools, text="Cancel", command=self.cancel_crop).pack(side="left")
+        self.apply_btn = ttk.Button(pic, text="Apply to file", command=self.apply_picture_edits)
+        self.apply_btn.pack(side="right")
+        Tooltip(self.apply_btn, lambda: (
+            "Camera RAW photos can't be changed; use Save copy instead"
+            if self.video_path and raw_photos.is_raw(self.video_path) else
+            "Save the turned / cropped picture over the file  (Ctrl+S). "
+            + ("The original goes to the Recycle Bin." if sys.platform == "win32"
+               else "The original is replaced.")))
+        self.pic_label = ttk.Label(pic, style="Muted.TLabel", width=1)
+        self.pic_label.pack(side="left", fill="x", expand=True, padx=(10, 10))
+
         # Status line; the progress bar and Cancel only show while saving.
         statusbar = ttk.Frame(main)
         ttk.Checkbutton(statusbar, text="Show in folder after saving",
@@ -697,11 +740,12 @@ class GifMakerApp:
         top.pack(side="top", fill="x")
         statusbar.pack(side="bottom", fill="x", pady=(8, 0))
         edit.pack(side="bottom", fill="x", pady=(8, 0))
+        pic.pack(side="bottom", fill="x", pady=(8, 0))
         bar.pack(side="bottom", fill="x", pady=(2, 0))
         scrub.pack(side="bottom", fill="x")
         self.split.pack(side="top", fill="both", expand=True, pady=(8, 4))
         # Hidden in fullscreen, which keeps just the video, timeline and play bar.
-        self._windowed_only = [top, edit, statusbar]
+        self._windowed_only = [top, edit, pic, statusbar]
         self._rows = [(w, w.pack_info()) for w in main.pack_slaves()]
 
         self.root.bind("<space>", lambda e: self._key_set(e, self.toggle_play))
@@ -725,6 +769,11 @@ class GifMakerApp:
         self.root.bind("<Key>", self._key_sort)  # the sort keys (more specific keys win)
         self.root.bind("<Control-z>", lambda e: self._key_set(e, self.undo_sort))
         self.root.bind("<Control-e>", lambda e: self.reveal_current())
+        self.root.bind("<Control-r>", lambda e: self._key_set(e, lambda: self.rotate_picture(90)))
+        self.root.bind("<Control-R>", lambda e: self._key_set(e, lambda: self.rotate_picture(-90)))
+        self.root.bind("<Control-s>", lambda e: self._key_set(e, self.apply_picture_edits))
+        self.root.bind("<Return>", lambda e: self._key_set(e, self.finish_crop)
+                       if self.crop_box else None)
         self._update_nav()
         # Let the window be shrunk until the video is small, but no narrower than
         # the play bar (and keep its size from now on, whatever the labels say).
@@ -820,6 +869,8 @@ class GifMakerApp:
                                                   filetypes=OPEN_TYPES)
         if not path:
             return
+        if not self._leave_picture(path):
+            return
         if self.sections and not messagebox.askyesno(
                 "Open another video",
                 f"Opening another video clears your {len(self.sections)} "
@@ -832,6 +883,9 @@ class GifMakerApp:
             messagebox.showerror("Could not open video", str(e))
             return
         self.video_path = path
+        self.pic_edit = dict(pe.NO_EDIT)
+        if self.crop_box:
+            self._end_crop()
         self.zoom = None
         self._zoom_changed()
         self.is_image = ff.is_image(path)
@@ -1022,6 +1076,9 @@ class GifMakerApp:
             self.slide_job = self.root.after(500, self._slide_next)
 
     def _escape(self, _event=None):
+        if self.crop_box:
+            self.cancel_crop()
+            return
         if self.slideshow:
             self.stop_slideshow()
         if self.fullscreen:
@@ -1173,6 +1230,8 @@ class GifMakerApp:
                 continue
             if self.is_image and widget in (self.scrub_bar, self.edit_frame):
                 continue
+            if not self.is_image and widget is self.pic_bar:
+                continue
             widget.pack(packing)
 
     def _apply_media_mode(self):
@@ -1189,6 +1248,7 @@ class GifMakerApp:
             self.sound_check.state(["!disabled"] if self.has_audio or not self.video_path
                                    else ["disabled"])
         self.snap_btn.config(text="Save copy..." if self.is_image else "Snapshot...")
+        self._update_picture_bar()
 
     def _on_view_resize(self, event):
         """The video area changed size: centre the picture now, re-render it shortly."""
@@ -1250,7 +1310,8 @@ class GifMakerApp:
     def _region(self, zoom="current"):
         """((x, y, w, h) of the picture shown, in its pixels, (width, height) on screen)."""
         zoom = self.zoom if zoom == "current" else zoom
-        src_w, src_h = max(2, self.video_width or 2), max(2, self.video_height or 2)
+        shown_w, shown_h = self._shown_size()
+        src_w, src_h = max(2, shown_w or 2), max(2, shown_h or 2)
         fit = min(self.view_w / src_w, self.view_h / src_h)
         scale = fit * (zoom[2] if zoom else 1.0)
         w, h = min(src_w, self.view_w / scale), min(src_h, self.view_h / scale)
@@ -1268,7 +1329,7 @@ class GifMakerApp:
 
     def _wheel_zoom(self, event):
         """Zoom in or out around the mouse pointer (it stays on the same spot)."""
-        if not self.video_path:
+        if not self.video_path or self.crop_box:
             return
         zoom_in = getattr(event, "num", None) == 4 or getattr(event, "delta", 0) > 0
         mag = self.zoom[2] if self.zoom else 1.0
@@ -1296,10 +1357,27 @@ class GifMakerApp:
             self._zoom_changed()
 
     def _pan_start(self, event):
+        if self.crop_box:
+            self.crop_box.press(event)
+            return
         self.pan = (event.x, event.y, self.zoom) if self.zoom else None
+
+    def _pan_end(self, event):
+        self.pan = None
+        if self.crop_box:
+            self.crop_box.release(event)
+
+    def _canvas_hover(self, event):
+        if self.crop_box:
+            cursor = self.crop_box.cursor(event)
+            if cursor is not None:
+                self.canvas.config(cursor=cursor)
 
     def _pan(self, event):
         """Drag the zoomed-in picture around."""
+        if self.crop_box:
+            self.crop_box.motion(event)
+            return
         if not self.pan or not self.zoom:
             return
         x0, y0, (zx, zy, mag) = self.pan
@@ -1364,8 +1442,7 @@ class GifMakerApp:
         """Size to decode frames at: as big as fits in the video area (the zoomed-in
         part, when zoomed)."""
         if not self.zoom:
-            return ff.fit_size(self.video_width, self.video_height, self.view_w, self.view_h,
-                               upscale=True)
+            return ff.fit_size(*self._shown_size(), self.view_w, self.view_h, upscale=True)
         return self._region()[1]
 
     def close_file(self):
@@ -1384,6 +1461,9 @@ class GifMakerApp:
             self.root.after_cancel(self.settle_job)
             self.settle_job = None
         self.video_path = None
+        self.pic_edit = dict(pe.NO_EDIT)
+        if self.crop_box:
+            self._end_crop()
         self.zoom = None
         self._zoom_changed()
         self.duration = 0.0
@@ -1640,6 +1720,8 @@ class GifMakerApp:
         self.shown_t = t
         self.canvas.itemconfig(self.canvas_img, image=img)
         self.canvas.itemconfig(self.canvas_text, text="")
+        if self.crop_box:
+            self.crop_box.set_box(self._picture_box())
 
     def _request_frame(self, t, exact):
         self.frame_want = (self.video_token, self.video_path, t, exact)
@@ -1650,7 +1732,7 @@ class GifMakerApp:
         token, path, t, exact = self.frame_want
         self.frame_want = None
         fw, fh = self._frame_size()
-        zoom_vf = self._zoom_vf()
+        zoom_vf = ff.chain(self._edit_vf(), self._zoom_vf())
         region = self._region()[0]
         self.frame_busy = True
 
@@ -1777,7 +1859,11 @@ class GifMakerApp:
         if self.fullscreen:  # so the preview window isn't hidden behind the video
             self.toggle_fullscreen()
         t = self.position.get()
-        ExportDialog(self, "snapshot", self.transform,
+        if self.crop_box:
+            self.finish_crop()
+        start = dict(self.pic_edit) if self.is_image and pe.is_edited(self.pic_edit) \
+            else self.transform
+        ExportDialog(self, "snapshot", start,
                      lambda transform, choice, rendered, options: self._save_snapshot(
                          t, transform, options.get("replace")),
                      time=t, replace=self.is_image)
@@ -1814,8 +1900,9 @@ class GifMakerApp:
                 show_in_folder(dst)
 
     # ------------------------------------------------- replace a picture
-    def _replace_picture(self, transform):
-        """Save the rotated / cropped picture over the original (which is recycled)."""
+    def _replace_picture(self, transform, confirm=True, then=None):
+        """Save the rotated / cropped picture over the original (which is recycled).
+        then() runs once it's saved (instead of showing the new version)."""
         path = self.video_path
         name = os.path.basename(path)
         if raw_photos.is_raw(path):
@@ -1824,8 +1911,8 @@ class GifMakerApp:
             return
         where = ("The original goes to the Recycle Bin, so you can get it back."
                  if sys.platform == "win32" else "The original is replaced for good.")
-        if not messagebox.askyesno("Replace original",
-                                   f"Save the edited picture over \u201c{name}\u201d?\n\n{where}"):
+        if confirm and not messagebox.askyesno(
+                "Replace original", f"Save the edited picture over \u201c{name}\u201d?\n\n{where}"):
             return
         folder = os.path.dirname(os.path.abspath(path))
         stem, ext = os.path.splitext(name)
@@ -1835,11 +1922,11 @@ class GifMakerApp:
 
         def work():
             err = ff.save_frame(self.ffmpeg, path, 0, temp, vf)
-            ui_thread.call(lambda: self._picture_saved(err, path, temp))
+            ui_thread.call(lambda: self._picture_saved(err, path, temp, then))
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _picture_saved(self, err, path, temp):
+    def _picture_saved(self, err, path, temp, then=None):
         if err or not os.path.exists(temp):
             try:
                 os.remove(temp)
@@ -1848,9 +1935,9 @@ class GifMakerApp:
             self.status.set("Couldn't save the picture.")
             messagebox.showerror("Replace original", (err or "Nothing was written.")[-1500:])
             return
-        self._swap_when_free(path, temp, tries=15)
+        self._swap_when_free(path, temp, tries=15, then=then)
 
-    def _swap_when_free(self, path, temp, tries):
+    def _swap_when_free(self, path, temp, tries, then=None):
         # The original may still be open for a moment (a thumbnail being made, say),
         # and Windows won't recycle an open file, so retry for a couple of seconds.
         try:
@@ -1859,7 +1946,7 @@ class GifMakerApp:
             os.replace(temp, path)
         except OSError as e:
             if tries > 0:
-                self.root.after(150, lambda: self._swap_when_free(path, temp, tries - 1))
+                self.root.after(150, lambda: self._swap_when_free(path, temp, tries - 1, then))
                 return
             kept = f"\n\nThe edited picture is saved as {os.path.basename(temp)}." \
                 if os.path.exists(temp) else ""
@@ -1869,11 +1956,142 @@ class GifMakerApp:
             return
         self.transform = dict(NO_TRANSFORM)
         if self.video_path == path:
-            self.open_video(path)  # show the new version
+            self.pic_edit = dict(pe.NO_EDIT)  # it's in the file now
+            if then is None:
+                self.open_video(path)  # show the new version
         if self.files_shown:
             self.browser.refresh(path)
+        if then is not None:
+            then()
         recycled = " (the original is in the Recycle Bin)" if sys.platform == "win32" else ""
         self.status.set(f"Replaced {os.path.basename(path)}{recycled}.")
+
+    # ------------------------------------------- turning and cropping
+    def _shown_size(self):
+        """Pixel size of the picture as shown: after the turn and crop not yet saved."""
+        if self.is_image and pe.is_edited(self.pic_edit):
+            return pe.edited_size(self.video_width, self.video_height, self.pic_edit,
+                                  crop=not self.crop_box)
+        return self.video_width, self.video_height
+
+    def _edit_vf(self):
+        if not self.is_image or not pe.is_edited(self.pic_edit):
+            return ""
+        edit = self.pic_edit
+        return ff.transform_filters(edit["rotate"], edit["flip"],
+                                    None if self.crop_box else edit["crop"])
+
+    def _picture_box(self):
+        """(x, y, w, h) of the picture on the canvas (when not zoomed)."""
+        fw, fh = self._frame_size()
+        return (self.view_w - fw) / 2, (self.view_h - fh) / 2, fw, fh
+
+    def _picture_edit_changed(self):
+        """Show the picture with the edit (re-rendered, at the new shape)."""
+        self.zoom = None
+        self.raw_image = None  # the old shape can't be reused for the instant version
+        self._zoom_changed()
+        self._update_picture_bar()
+
+    def _update_picture_bar(self):
+        edited = self.is_image and pe.is_edited(self.pic_edit)
+        raw = bool(self.video_path) and raw_photos.is_raw(self.video_path)
+        self.apply_btn.state(["!disabled"] if edited and not raw and not self.busy
+                             and not self.crop_box else ["disabled"])
+        if self.crop_box:
+            text = "Drag a box on the picture; drag its corners to resize it, or inside it " \
+                   "to move it."
+        elif edited:
+            text = pe.describe(self.video_width, self.video_height, self.pic_edit) + \
+                ("  (preview only: RAW photos can be saved as a copy)" if raw
+                 else "  \u2013 not saved yet")
+        else:
+            text = ""
+        self.pic_label.config(text=text[:1].upper() + text[1:])
+
+    def rotate_picture(self, degrees):
+        if not self.is_image or self.crop_box or self.busy:
+            return
+        self.pic_edit = pe.rotated(self.pic_edit, degrees)
+        self._picture_edit_changed()
+
+    def flip_picture(self):
+        if not self.is_image or self.crop_box or self.busy:
+            return
+        self.pic_edit = pe.flipped(self.pic_edit)
+        self._picture_edit_changed()
+
+    def reset_picture_edits(self):
+        if self.crop_box:
+            self.cancel_crop()
+        if pe.is_edited(self.pic_edit):
+            self.pic_edit = dict(pe.NO_EDIT)
+            self._picture_edit_changed()
+
+    def start_crop(self):
+        if not self.is_image or self.crop_box or self.busy:
+            return
+        self.stop_slideshow()
+        size = pe.edited_size(self.video_width, self.video_height, self.pic_edit, crop=False)
+        self.crop_box = pe.CropBox(self.canvas, self.pic_edit["crop"], size)
+        self.crop_box.set_aspect(self.crop_aspect.get())
+        self.pic_tools.pack_forget()
+        self.crop_tools.pack(side="left", before=self.pic_label)
+        self.canvas.config(cursor="crosshair")
+        self._picture_edit_changed()  # shows the whole picture, with the box over it
+
+    def _end_crop(self):
+        box, self.crop_box = self.crop_box, None
+        if box:
+            box.clear()
+        self.crop_tools.pack_forget()
+        self.pic_tools.pack(side="left", before=self.pic_label)
+        self.canvas.config(cursor="")
+        return box
+
+    def finish_crop(self):
+        box = self._end_crop()
+        if not box:
+            return
+        crop = tuple(box.crop)
+        if all(abs(a - b) < 1e-4 for a, b in zip(crop, pe.FULL)):
+            crop = pe.FULL
+        self.pic_edit = dict(self.pic_edit, crop=crop)
+        self._picture_edit_changed()
+
+    def cancel_crop(self):
+        if self._end_crop():
+            self._picture_edit_changed()
+
+    def apply_picture_edits(self, confirm=True, then=None):
+        """Save the turn / crop over the picture's file."""
+        if self.crop_box:
+            self.finish_crop()
+        if not self.is_image or not pe.is_edited(self.pic_edit) or self.busy:
+            return
+        self._replace_picture(dict(self.pic_edit), confirm=confirm, then=then)
+
+    def _leave_picture(self, path):
+        """About to show another file: offer to save the turn / crop first.
+        Returns False to stay on this picture."""
+        if self.crop_box:
+            self._end_crop()
+        if not (self.is_image and pe.is_edited(self.pic_edit) and self.video_path
+                and path != self.video_path and os.path.exists(self.video_path)
+                and not raw_photos.is_raw(self.video_path)):
+            return True
+        answer = messagebox.askyesnocancel(
+            "Save your changes?",
+            f"Save the turned / cropped picture over "
+            f"\u201c{os.path.basename(self.video_path)}\u201d before moving on?")
+        if answer is None:
+            return False
+        if answer:
+            self.stop_slideshow()
+            self.apply_picture_edits(confirm=False, then=lambda: self.open_video(path))
+            return False
+        self.pic_edit = dict(pe.NO_EDIT)
+        return True
 
     def step(self, delta):
         if self.is_image:
