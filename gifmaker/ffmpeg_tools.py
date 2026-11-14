@@ -137,6 +137,11 @@ def probe(ffmpeg, path):
          or re.search(r"^\s*rotate\s*:\s*(-?\d+)", info, re.MULTILINE))
     if m and round(abs(float(m.group(1)))) % 180 == 90:
         width, height = height, width
+    if is_image(path) or not width:
+        # Go by the decoded picture, not the header: ffmpeg may turn a photo upright
+        # (its EXIF orientation), and drawing it at the header's sideways size would
+        # squash it.
+        width, height = _decoded_size(ffmpeg, path) or (width, height)
     has_audio = any("Audio:" in l for l in info.splitlines())
     m = re.search(r"Input #0, (.+?), from ", info)
     formats = set(m.group(1).split(",")) if m else set()
@@ -145,6 +150,16 @@ def probe(ffmpeg, path):
     else:
         _preroll.pop(_key(path), None)
     return VideoInfo(duration, width, height, fps, has_audio)
+
+
+def _decoded_size(ffmpeg, path):
+    """(width, height) of the first picture as ffmpeg decodes it, or None."""
+    proc = subprocess.run(
+        [ffmpeg, "-hide_banner", "-i", path, "-map", "0:v:0", "-frames:v", "1",
+         "-vf", "showinfo", "-f", "null", "-"],
+        capture_output=True, text=True, errors="replace", creationflags=_NO_WINDOW)
+    m = re.search(r"\bs:(\d+)x(\d+)", proc.stderr)
+    return (int(m.group(1)), int(m.group(2))) if m else None
 
 
 def _first_frame_time(ffmpeg, path, info):
