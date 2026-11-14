@@ -1,6 +1,7 @@
 """A window for showing several videos (and pictures) at once, each in a panel you can move
 and resize."""
 
+import datetime
 import math
 import os
 import sys
@@ -9,6 +10,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from . import ffmpeg_tools as ff
+from . import files
+from . import screen_recorder as rec
 from . import theme
 from . import ui_thread
 from .player import Player
@@ -43,6 +46,8 @@ class GridPlayer(tk.Toplevel):
         self.snap = self._setting_var("grid_snap", False)
         self.snap_panels = self._setting_var("grid_snap_panels", True)
         self.layout_name = tk.StringVar()
+        self.recording = None  # a screen_recorder.Recording of the panels area
+        self.closed_down = False
         self.title("Grid player")
         self.geometry("1200x800")
         self.minsize(520, 400)
@@ -61,6 +66,12 @@ class GridPlayer(tk.Toplevel):
         Tooltip(panels, "While dragging or resizing, edges snap to nearby panels' edges and "
                         "the window's (lining up, or side by side)")
 
+        self.rec_btn = ttk.Button(bar, text="● Record", command=self.toggle_recording)
+        self.rec_btn.pack(side="right", padx=(16, 0))
+        Tooltip(self.rec_btn, "Record the panels area (not this toolbar) to a video, with "
+                              "the sound the panels play. Keep the window where it is and "
+                              "uncovered while recording. Uses Record screen's frame rate, "
+                              "mouse and folder settings.")
         delete = ttk.Button(bar, text="Delete", command=self.delete_layout)
         delete.pack(side="right")
         Tooltip(delete, "Forget the chosen layout")
@@ -276,7 +287,74 @@ class GridPlayer(tk.Toplevel):
             self.after(10, lambda p=path, i=i: self.add(p, x + 30 * i, y + 30 * i))
         return COPY
 
+    # --------------------------------------------------------- recording
+    def toggle_recording(self):
+        if self.recording:
+            if not self.recording.finished:
+                self.rec_btn.config(text="Saving...", state="disabled")
+                self.recording.stop()
+            return
+        self.update_idletasks()
+        area = (self.area.winfo_rootx(), self.area.winfo_rooty(),
+                self.area.winfo_width(), self.area.winfo_height())
+        area = rec._even_area(area, rec.virtual_screen(self))
+        folder = theme.load_setting("record_folder", "") or rec.default_folder()
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except OSError as e:
+            messagebox.showerror("Record", f"Can't save recordings in {folder}:\n{e}",
+                                 parent=self)
+            return
+        stamp = datetime.datetime.now().strftime("%Y-%m-%d %H-%M-%S")
+        out = os.path.join(folder, f"Grid {stamp}.mp4")
+        sound = rec.sound_available() is None and theme.load_setting("record_sound", True)
+        self.recording = rec.Recording(
+            self.app.ffmpeg, area, int(theme.load_setting("record_fps", 30)),
+            bool(theme.load_setting("record_mouse", True)), sound, out, self._recorded)
+        try:
+            self.recording.start()
+        except OSError as e:
+            self.recording = None
+            messagebox.showerror("Record", f"Couldn't start recording: {e}", parent=self)
+            return
+        self.resizable(False, False)  # the recorded area can't change size
+        self.rec_btn.config(text="■ Stop 0:00")
+        self._rec_tick()
+
+    def _rec_tick(self):
+        if not self.recording or self.recording.finished or self.closed_down:
+            return
+        if self.rec_btn.cget("text").startswith("■"):
+            s = int(self.recording.elapsed())
+            self.rec_btn.config(text=f"■ Stop {s // 60}:{s % 60:02d}")
+        self.after(500, self._rec_tick)
+
+    def _recorded(self, path, error):
+        recording, self.recording = self.recording, None
+        if self.closed_down:
+            return
+        self.resizable(True, True)
+        self.rec_btn.config(text="● Record", state="normal")
+        if error:
+            messagebox.showerror("Record", error, parent=self)
+            return
+        if not path:
+            return
+        note = ""
+        if recording and recording.want_sound and recording.sound_error:
+            note = f" (without sound: {recording.sound_error})"
+        self.app.status.set(f"Recorded {os.path.basename(path)}{note}.")
+        if messagebox.askyesno("Recorded", f"Saved {os.path.basename(path)}{note}.\n\n"
+                                           "Open it in GifMaker now?", parent=self):
+            self.app.open_saved(path)
+        else:
+            files.reveal([path])
+
     def close(self):
+        self.closed_down = True
+        if self.recording and not self.recording.finished:
+            self.recording.abort()
+        self.recording = None
         for tile in self.tiles:
             tile.close()
         self.tiles = []
