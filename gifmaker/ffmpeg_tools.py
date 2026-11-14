@@ -415,6 +415,57 @@ def build_clip_command(ffmpeg, src, dst, sections, has_audio, pre_vf=""):
     return cmd
 
 
+def build_sequence_command(ffmpeg, clips, dst, width, height, fps):
+    """Build the ffmpeg command line to join several clips (from different files) into
+    one MP4 of width x height at fps, one after another.
+
+    clips is a list of dicts with path, start, end (seconds; for a picture, end - start
+    is how long it shows), sound (use the file's sound), has_audio and image. Each clip
+    is scaled to fit the frame (black bars around it if its shape differs); clips with
+    no sound get silence, so the sound stays in step with the picture.
+    """
+    cmd = [ffmpeg, "-hide_banner", "-y", "-nostats", "-loglevel", "error",
+           "-progress", "pipe:1"]
+    graph = []
+    joined = ""
+    fit = (f"scale={width}:{height}:force_original_aspect_ratio=decrease:flags=bicubic,"
+           f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,"
+           f"fps={fps},format=yuv420p")
+    for i, clip in enumerate(clips):
+        length = max(0.04, clip["end"] - clip["start"])
+        if clip["image"]:
+            cmd += ["-loop", "1", "-framerate", str(fps), "-t", f"{length:.3f}",
+                    "-i", clip["path"]]
+            origin = None
+        else:
+            seek, pre, origin = _seek(clip["path"], clip["start"])
+            cmd += [*seek, "-t", f"{length + pre:.3f}", "-i", clip["path"]]
+        if origin is None:
+            cut = f"trim=end={length:.3f},setpts=PTS-STARTPTS"
+        else:
+            cut = f"trim=start={origin:.6f}:end={origin + length:.6f},setpts=PTS-STARTPTS"
+        # tpad holds the last frame if the file's picture ends a little early
+        graph.append(f"[{i}:v:0]{cut},{fit},tpad=stop_mode=clone:stop_duration={length:.3f},"
+                     f"trim=end={length:.3f}[v{i}]")
+        stereo = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
+        if clip["sound"] and clip["has_audio"] and not clip["image"]:
+            if origin is None:
+                acut = f"atrim=end={length:.3f}"
+            else:
+                acut = (f"atrim=start={origin:.6f}:end={origin + length:.6f},"
+                        f"asetpts=PTS-{origin:.6f}/TB")
+            graph.append(f"[{i}:a:0]{stereo},apad,{acut},asetpts=PTS-STARTPTS[a{i}]")
+        else:
+            graph.append(f"anullsrc=r=48000:cl=stereo,atrim=end={length:.3f},{stereo}[a{i}]")
+        joined += f"[v{i}][a{i}]"
+    graph.append(f"{joined}concat=n={len(clips)}:v=1:a=1[vout][aout]")
+    cmd += ["-filter_complex", ";".join(graph), "-map", "[vout]", "-map", "[aout]",
+            "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
+            "-r", str(fps), "-c:a", "aac", "-b:a", "192k",
+            "-movflags", "+faststart", *MUXING_QUEUE, dst]
+    return cmd
+
+
 def run_with_progress(cmd, output_seconds, on_progress=None, should_cancel=None):
     """Run a command from build_animation_command or build_clip_command, reporting
     progress in 0..1. The output file is the last argument.

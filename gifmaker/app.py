@@ -31,6 +31,7 @@ from .grid_player import GridPlayer
 from .link_dialog import LinkDialog
 from .rename_tool import RenameTool
 from .screen_recorder import RecorderWindow
+from .sequence_editor import SequenceEditor
 from .player import Player
 from .timeline import Timeline
 from .tooltip import Tooltip
@@ -108,6 +109,7 @@ class GifMakerApp:
         self.grid_window = None
         self.rename_window = None
         self.recorder_window = None
+        self.sequence_window = None
         self.view_w, self.view_h = PREVIEW_W, PREVIEW_H  # size of the video area
         self.resize_job = None
         self.listing = None  # (folder, its modified time, paths, {normcased path: index}, when)
@@ -193,6 +195,24 @@ class GifMakerApp:
         if self.video_path:
             self.grid_window.after(100, lambda: self.grid_window and self.grid_window.add(self.video_path))
 
+    def open_sequence(self):
+        """Open the timeline editor (or bring it to the front)."""
+        if self.sequence_window is not None:
+            self.sequence_window.lift()
+            return
+        self.stop_playback()
+        self.sequence_window = SequenceEditor(self, OPEN_TYPES)
+        if self.video_path:
+            self.sequence_window.after(100, lambda: self.sequence_window and
+                                       self.sequence_window.add_current())
+
+    def open_saved(self, path):
+        """Open a video another window made (a recording, a timeline edit) in this one."""
+        self.root.deiconify()
+        self.root.lift()
+        if not self.busy:
+            self.open_video(path)
+
     def open_recorder(self):
         if self.recorder_window is not None and self.recorder_window.winfo_exists():
             self.recorder_window.deiconify()
@@ -201,10 +221,7 @@ class GifMakerApp:
         self.recorder_window = RecorderWindow(self, self._recorded)
 
     def _recorded(self, path, note):
-        self.root.deiconify()
-        self.root.lift()
-        if not self.busy:
-            self.open_video(path)
+        self.open_saved(path)
         self.status.set(f"Recorded {os.path.basename(path)}{note}.")
 
     def open_rename_tool(self):
@@ -231,6 +248,8 @@ class GifMakerApp:
             for tile in list(self.grid_window.tiles):
                 if tile.path and matches(tile.path):
                     self.grid_window.remove(tile)
+        if self.sequence_window is not None:
+            self.sequence_window.uses(matches)
         if not self.video_path or not matches(self.video_path):
             return lambda mapping: None
         path, position = self.video_path, self.position.get()
@@ -424,6 +443,10 @@ class GifMakerApp:
             self.rename_window.close()  # stops it reading pictures' colours
         if self.recorder_window is not None:
             self.recorder_window.shutdown()  # stops ffmpeg recording
+        if self.sequence_window is not None:
+            self.sequence_window.cancel_requested = True
+            self.sequence_window.busy = False
+            self.sequence_window.close()
         self.player.close()
         self.root.destroy()
 
@@ -476,6 +499,10 @@ class GifMakerApp:
         record.pack(side="right", padx=(0, 4))
         Tooltip(record, "Record the screen (or part of it), with the computer's sound, "
                         "then open the video here to make GIFs from it")
+        edit = ttk.Button(top, text="Timeline edit", command=self.open_sequence)
+        edit.pack(side="right", padx=(0, 4))
+        Tooltip(edit, "Join parts of several videos and pictures, one after another, "
+                      "into one video")
         grid = ttk.Button(top, text="Grid player", command=self.open_grid)
         grid.pack(side="right")
         Tooltip(grid, "Play several videos (and show pictures) at once, each in a panel you can "
@@ -1194,6 +1221,8 @@ class GifMakerApp:
         players = [self.player]
         if self.grid_window is not None:
             players += [tile.player for tile in self.grid_window.tiles]
+        if self.sequence_window is not None:
+            players.append(self.sequence_window.player)
         players += [w.player for w in self.root.winfo_children() if isinstance(w, ExportDialog)]
         for player in players:
             player.volume, player.boost = volume, boost

@@ -113,6 +113,21 @@ the panels back in those spots, and videos you add after that fill its empty spo
 or resize a panel close to another one or to the window's edge. Pictures can go on the grid too (they get just a title bar, and re-sharpen when resized). **Arrange** tiles them neatly,
 and each one has its own sound switch (off to begin with).
 
+**● Record** on the grid player's toolbar records the panels area (not the toolbar) to an
+MP4, with the sound the panels play; click it again (it shows the time) to stop. It uses
+**Record screen**'s frame rate, mouse and folder settings. Keep the window where it is and
+uncovered while recording; afterwards GifMaker offers to open the video.
+
+**Timeline edit** (top right) joins parts of several videos and pictures into one video.
+Add them with **Add...**, by dragging them in, or with **Add open video** (the video in the
+main window, trimmed to its markers, or one clip per section). The clips sit on a track at
+the bottom and play left to right: drag one to move it (or use **◀ ▶**), click one to trim it
+with the green and red markers (or **[** and **]**), and pick how long each picture shows.
+**Duplicate** lets you use another part of the same video, **Sound** keeps or mutes a clip's
+sound, and **Play all** previews the whole thing. **Save video...** makes one MP4 at the size
+and frame rate you pick (clips of another shape get black bars, not stretched) and can open
+it in GifMaker straight away, ready to make GIFs from.
+
 **Rename files** (top right) renames everything in a folder with a numbered pattern,
 like `1, 2, 3` or `videogames-1, videogames-2` (with optional zero-padding), in name, date,
 size or **colour** order. Colour order first splits the pictures and videos into colour and black-and-white: it
