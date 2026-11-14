@@ -140,8 +140,10 @@ their coloured parts (reds, oranges, yellows, greens, blues, purples), the black
 ones dark to light after them; each colour group runs dark-to-light then light-to-dark so
 neighbours blend. It reads three frames of each video, with black bars ignored. Look-alikes (the same video re-encoded, resized, trimmed
 slightly or renamed) are kept next to each other and marked A, B, C... so duplicates are
-easy to spot. What it reads is saved, so sorting the same folder again is instant. It shows the old and new names before changing
-anything, and **Undo last rename** puts them back.
+easy to spot. What it reads is saved, so sorting the same folder again is instant. Camera RAW photos are renamed too; one named like a
+JPG (IMG_0042.CR2 beside IMG_0042.JPG) gets the same new number as it, so the pair stays
+matched (untick *RAW photos share their JPG's number* to number them separately). It shows
+the old and new names before changing anything, and **Undo last rename** puts them back.
 
 **Dark** (top right) switches the whole app to dark colours, title bars included. It's
 remembered, and the first time it follows your Windows setting.
