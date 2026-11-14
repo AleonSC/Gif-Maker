@@ -64,7 +64,9 @@ or narrower. Only the thumbnails in view are drawn and made, so folders of thous
 at once and don't keep the computer busy; thumbnails are remembered, so they show at
 once next time.
 
-Pictures open too (JPG, PNG, BMP, WebP, TIFF): the timeline and video controls step aside,
+Pictures open too (JPG, PNG, BMP, WebP, TIFF, and camera RAW photos: CR2, NEF, ARW, DNG,
+RAF, ORF, RW2, PEF and others, shown from the full-size JPEG the camera keeps inside; a RAW
+photo can't be replaced, only saved as a copy): the timeline and video controls step aside,
 the picture fills the window, and **Save copy...** rotates, flips or crops it and saves a
 copy, or **Replace original** saves the edit over the file itself (the original goes to the
 Recycle Bin, so you can get it back). **‹ ›**, the Files panel, Delete and renaming work with pictures and videos alike.

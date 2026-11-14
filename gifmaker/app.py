@@ -20,6 +20,7 @@ from tkinter import filedialog, font, messagebox, ttk
 from . import ffmpeg_tools as ff
 from . import downloader
 from . import files
+from . import raw_photos
 from . import single_instance
 from . import sort_keys
 from . import theme
@@ -1817,6 +1818,10 @@ class GifMakerApp:
         """Save the rotated / cropped picture over the original (which is recycled)."""
         path = self.video_path
         name = os.path.basename(path)
+        if raw_photos.is_raw(path):
+            messagebox.showinfo("Replace original", f"\u201c{name}\u201d is a camera RAW "
+                                "photo, which GifMaker can't write. Use Save copy instead.")
+            return
         where = ("The original goes to the Recycle Bin, so you can get it back."
                  if sys.platform == "win32" else "The original is replaced for good.")
         if not messagebox.askyesno("Replace original",

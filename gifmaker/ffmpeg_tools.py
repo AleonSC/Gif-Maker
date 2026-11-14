@@ -9,6 +9,8 @@ import sys
 import threading
 from collections import namedtuple
 
+from . import raw_photos
+
 # Stop ffmpeg from flashing a console window when running as a windowed .exe.
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
@@ -61,11 +63,19 @@ VideoInfo = namedtuple("VideoInfo", "duration width height fps has_audio")
 # (-copyts) and trim at the exact time after decoding. probe() records which files
 # need it, with the file's starting timestamp.
 # Still pictures (GIFs count as videos: they're usually animated).
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"} \
+    | raw_photos.RAW_EXTENSIONS
 
 
 def is_image(path):
     return os.path.splitext(path)[1].lower() in IMAGE_EXTENSIONS
+
+
+def _input(path):
+    """What to hand ffmpeg for path: a camera RAW photo's JPEG, else the file itself."""
+    if raw_photos.is_raw(path):
+        return raw_photos.preview_path(path) or path
+    return path
 
 
 PREROLL_FORMATS = {"mpegts", "mpeg", "mpegvideo", "h264", "hevc", "flv"}
@@ -106,8 +116,10 @@ def probe(ffmpeg, path):
 
     width and height are as displayed: swapped for phone videos flagged as rotated.
     """
+    if raw_photos.is_raw(path) and not raw_photos.preview_path(path):
+        raise RuntimeError("This RAW photo has no picture GifMaker can show.")
     proc = subprocess.run(
-        [ffmpeg, "-hide_banner", "-i", path],
+        [ffmpeg, "-hide_banner", "-i", _input(path)],
         capture_output=True,
         text=True,
         errors="replace",
@@ -155,7 +167,7 @@ def probe(ffmpeg, path):
 def _decoded_size(ffmpeg, path):
     """(width, height) of the first picture as ffmpeg decodes it, or None."""
     proc = subprocess.run(
-        [ffmpeg, "-hide_banner", "-i", path, "-map", "0:v:0", "-frames:v", "1",
+        [ffmpeg, "-hide_banner", "-i", _input(path), "-map", "0:v:0", "-frames:v", "1",
          "-vf", "showinfo", "-f", "null", "-"],
         capture_output=True, text=True, errors="replace", creationflags=_NO_WINDOW)
     m = re.search(r"\bs:(\d+)x(\d+)", proc.stderr)
@@ -231,7 +243,7 @@ def grab_frame(ffmpeg, path, seconds, max_w, max_h, fast=False, pre_vf="", codec
         # Without this ffmpeg drops a keyframe that lies before the seek point.
         cmd += ["-copyts"]
     cmd += [
-        "-i", path, "-an", "-sn",
+        "-i", _input(path), "-an", "-sn",
         "-frames:v", "1", "-vf", chain(_trim_video(origin), pre_vf, vf),
         "-f", "image2pipe", "-vcodec", codec, "-",
     ]
@@ -450,7 +462,7 @@ def build_sequence_command(ffmpeg, clips, dst, width, height, fps):
         length = max(0.04, clip["end"] - clip["start"])
         if clip["image"]:
             cmd += ["-loop", "1", "-framerate", str(fps), "-t", f"{length:.3f}",
-                    "-i", clip["path"]]
+                    "-i", _input(clip["path"])]
             origin = None
         else:
             seek, pre, origin = _seek(clip["path"], clip["start"])
@@ -550,7 +562,7 @@ def open_raw_stream(ffmpeg, path, start, width, height, fps, duration=None,
         cmd += ["-t", f"{duration + pre:.3f}"]
     setpts = f"setpts=PTS/{speed}" if speed != 1.0 else ""
     cmd += [
-        "-i", path, "-an", "-sn",
+        "-i", _input(path), "-an", "-sn",
         "-vf", chain(_trim_video(origin), pre_vf, setpts, f"fps={fps}", post_vf,
                      f"scale={width}:{height}:flags=bilinear"),
         "-fps_mode", "passthrough",  # one picture per filtered frame, never duplicated
@@ -609,7 +621,7 @@ def save_frame(ffmpeg, path, seconds, dst, vf=""):
         ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
     ]
     seek, _, origin = _seek(path, seconds)
-    cmd += [*seek, "-i", path, "-frames:v", "1", "-update", "1"]
+    cmd += [*seek, "-i", _input(path), "-frames:v", "1", "-update", "1"]
     vf = chain(_trim_video(origin), vf)
     if vf:
         cmd += ["-vf", vf]

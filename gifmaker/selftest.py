@@ -252,6 +252,24 @@ def run(report_path):
             assert ff.is_image(path) and (info.width, info.height) == (300, 200), (ext, info)
             assert ff.grab_frame(exe, path, 0, 150, 100), ext
             made.append(ext)
+        # a camera RAW photo (laid out like a CR2) holding a JPEG flagged to be turned
+        # 90 degrees: it opens upright, 200 x 300
+        import struct
+        with open(os.path.join(os.path.dirname(src), "picture.jpg"), "rb") as f:
+            jpeg = f.read()
+        ifd = struct.pack("<H", 4) + b"".join(
+            struct.pack("<HHI", tag, kind, 1) + value for tag, kind, value in (
+                (0x0103, 3, struct.pack("<HH", 6, 0)),
+                (0x0111, 4, struct.pack("<I", 16 + 2 + 4 * 12 + 4)),
+                (0x0112, 3, struct.pack("<HH", 6, 0)),
+                (0x0117, 4, struct.pack("<I", len(jpeg))))) + struct.pack("<I", 0)
+        raw = os.path.join(os.path.dirname(src), "picture.cr2")
+        with open(raw, "wb") as f:
+            f.write(b"II*\0" + struct.pack("<I", 16) + b"CR\x02\0\0\0\0\0" + ifd + jpeg)
+        info = ff.probe(exe, raw)
+        assert ff.is_image(raw) and (info.width, info.height) == (200, 300), ("cr2", info)
+        assert ff.grab_frame(exe, raw, 0, 100, 150), "cr2"
+        made.append(".cr2")
         return "opened " + " ".join(made)
 
     def firefox_login():
