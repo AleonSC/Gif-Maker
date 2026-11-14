@@ -8,14 +8,16 @@ from concurrent.futures import ThreadPoolExecutor
 from tkinter import filedialog, messagebox, ttk
 
 from . import files
+from . import raw_photos
 from . import similarity as sim
 from . import theme
 from . import ui_thread
+from .tooltip import Tooltip
 
 ORDERS = ("Name", "Date modified", "Size", "Colour")
 DIGITS = {"None (1, 2 ... 10)": None, "Auto (01 ... 10)": "auto", "2 (01)": 2, "3 (001)": 3,
           "4 (0001)": 4}
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"} | raw_photos.RAW_EXTENSIONS
 _sigs = None  # file identity -> picture fingerprint; loaded from disk when first needed
 MAX_SWATCHES = 400  # different swatch pictures at most (see RenameTool._swatch)
 
@@ -56,13 +58,16 @@ class RenameTool(tk.Toplevel):
         self.order = tk.StringVar(value="Name")
         self.reverse = tk.BooleanVar(value=False)
         self.together = tk.BooleanVar(value=True)
+        self.pair_raw = tk.BooleanVar(value=theme.load_setting("rename_pair_raw", True))
+        self.pair_raw.trace_add("write", lambda *_: theme.save_setting("rename_pair_raw",
+                                                                     self.pair_raw.get()))
         self.prefix = tk.StringVar(value="")
         self.separator = tk.StringVar(value="-")
         self.start = tk.StringVar(value="1")
         self.digits = tk.StringVar(value=list(DIGITS)[0])
         self.status = tk.StringVar()
         self._build()
-        for var in (self.reverse, self.together, self.digits):
+        for var in (self.reverse, self.together, self.digits, self.pair_raw):
             var.trace_add("write", lambda *_: self.refresh())
         for var in (self.prefix, self.separator, self.start):  # typed: wait for a pause
             var.trace_add("write", lambda *_: self._refresh_soon())
@@ -103,6 +108,11 @@ class RenameTool(tk.Toplevel):
         ttk.Checkbutton(order, text="Reverse", variable=self.reverse).grid(row=0, column=1, **pad)
         ttk.Checkbutton(order, text="Keep look-alikes together", variable=self.together).grid(
             row=1, column=0, columnspan=2, sticky="w", **pad)
+        pair = ttk.Checkbutton(order, text="RAW photos share their JPG's number",
+                               variable=self.pair_raw)
+        pair.grid(row=3, column=0, columnspan=2, sticky="w", **pad)
+        Tooltip(pair, "A camera RAW file named like a JPG (IMG_0042.CR2 and IMG_0042.JPG) "
+                      "gets the same new name as it, so the pair stays matched")
         ttk.Label(order, style="Muted.TLabel", wraplength=250, justify="left",
                   text="Colour: by each picture's main colour (the swatch's left block): "
                        "reds, oranges, yellows, greens, blues, purples, then greys. "
@@ -353,7 +363,26 @@ class RenameTool(tk.Toplevel):
         names = self._ordered()
         if names is None:
             return None
-        return list(zip(names, files.numbered_names(names, *self._settings())))
+        followers = {}  # a picture -> the RAW files that take its number
+        if self.pair_raw.get():
+            stems = {}
+            for name in names:
+                if not raw_photos.is_raw(name):
+                    stems.setdefault(os.path.splitext(name)[0].lower(), name)
+            kept = []
+            for name in names:
+                partner = raw_photos.is_raw(name) and stems.get(os.path.splitext(name)[0].lower())
+                if partner:
+                    followers.setdefault(partner, []).append(name)
+                else:
+                    kept.append(name)
+            names = kept
+        plan = []
+        for old, new in zip(names, files.numbered_names(names, *self._settings())):
+            plan.append((old, new))
+            stem = os.path.splitext(new)[0]
+            plan += [(raw, stem + os.path.splitext(raw)[1]) for raw in followers.get(old, [])]
+        return plan
 
     def refresh(self):
         if self.refresh_job:
