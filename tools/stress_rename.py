@@ -34,7 +34,6 @@ def main():
         if not os.path.exists(path):
             with open(path, "wb") as f:
                 f.write(n.encode())
-    probe = type("Probe", (), {"folder": folder})()
     cache = {}
 
     def color():
@@ -44,7 +43,7 @@ def main():
         cells = [color() for _ in range(16)]
         mean = tuple(sum(c[i] for c in cells) / 16 for i in range(3))
         palette = sorted(((rng.random(), color()) for _ in range(4)), reverse=True)
-        cache[R.RenameTool._color_key(probe, n)] = {
+        cache[R.RenameTool._color_key(folder, n)] = {
             "duration": 0.0, "frames": [(cells, rng.getrandbits(64), mean)], "mean": mean,
             "palette": palette, "main": palette[0][1], "colorful": rng.random()}
     sim.save_cache(cache)
