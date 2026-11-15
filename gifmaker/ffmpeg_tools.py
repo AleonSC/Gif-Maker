@@ -254,6 +254,33 @@ def grab_frame(ffmpeg, path, seconds, max_w, max_h, fast=False, pre_vf="", codec
     return proc.stdout
 
 
+def grab_frames(ffmpeg, path, times, width, height):
+    """The frames at each of times, scaled to exactly width x height, as raw RGB bytes
+    (one per time), read by a single ffmpeg (starting ffmpeg is the slow part for small
+    files). None if that didn't work."""
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error"]
+    graph, joined = [], ""
+    for i, t in enumerate(times):
+        seek, _, origin = _seek(path, t)
+        cmd += [*seek, "-i", _input(path)]
+        graph.append(f"[{i}:v:0]" + chain(_trim_video(origin), "setpts=PTS-STARTPTS",
+                                          f"scale={width}:{height}:flags=area",
+                                          "format=rgb24") + f"[f{i}]")
+        joined += f"[f{i}]"
+    graph.append(f"{joined}vstack=inputs={len(times)}[out]" if len(times) > 1
+                 else f"{joined}null[out]")
+    cmd += ["-filter_complex", ";".join(graph), "-map", "[out]", "-frames:v", "1",
+            "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=60, creationflags=_NO_WINDOW)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    size = width * height * 3
+    if proc.returncode != 0 or len(proc.stdout) != size * len(times):
+        return None
+    return [proc.stdout[i * size:(i + 1) * size] for i in range(len(times))]
+
+
 def iter_keyframes(ffmpeg, path, width, height, min_gap, should_stop):
     """Yield (seconds, rgb24 bytes) for keyframes at least min_gap seconds apart.
 

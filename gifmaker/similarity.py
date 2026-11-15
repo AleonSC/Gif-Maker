@@ -8,6 +8,7 @@ agree, count as look-alikes: the same video, re-encoded, resized or renamed.
 """
 
 import json
+import itertools
 import math
 import os
 import time
@@ -155,12 +156,17 @@ def fingerprint(ffmpeg, path):
             duration = 0.0  # still images
     times = [duration * p for p in POINTS] if duration > 1 else [0.0]
     frames = []
-    for t in times:
-        data = ff.grab_frame(ffmpeg, path, t, GRAB, GRAB,
-                             pre_vf=f"scale={GRAB}:{GRAB}:flags=area")
-        if not data:
-            continue
-        pixels = data.split(b"\n", 3)[-1]
+    # All the frames from one ffmpeg (much quicker for small files), else one at a time.
+    together = ff.grab_frames(ffmpeg, path, times, GRAB, GRAB) if len(times) > 1 else None
+    for k, t in enumerate(times):
+        if together:
+            pixels = together[k]
+        else:
+            data = ff.grab_frame(ffmpeg, path, t, GRAB, GRAB,
+                                 pre_vf=f"scale={GRAB}:{GRAB}:flags=area")
+            if not data:
+                continue
+            pixels = data.split(b"\n", 3)[-1]
         if len(pixels) == GRAB * GRAB * 3:
             frame = _frame_fingerprint(pixels)
             if frame:
@@ -200,10 +206,12 @@ def to_rgb(color):
 
 # ------------------------------------------------------- comparing
 def _frames_match(f1, f2):
-    differing = bin(f1[1] ^ f2[1]).count("1")
+    # Quick checks first: the shape hashes, then the average colours (which can't be
+    # further apart than the cells are on average).
+    if bin(f1[1] ^ f2[1]).count("1") > SAME_HASH or math.dist(f1[2], f2[2]) > SAME_COLOR:
+        return False
     cells = [math.dist(c1, c2) for c1, c2 in zip(f1[0], f2[0])]
-    return (differing <= SAME_HASH and sum(cells) / len(cells) <= SAME_COLOR
-            and max(cells) <= SAME_CELL)
+    return sum(cells) / len(cells) <= SAME_COLOR and max(cells) <= SAME_CELL
 
 
 def look_alike(s1, s2):
@@ -216,8 +224,13 @@ def look_alike(s1, s2):
     pairs = list(zip(s1["frames"], s2["frames"]))
     if not pairs:
         return False
-    matches = sum(_frames_match(a, b) for a, b in pairs)
-    return matches >= max(1, len(pairs) - 1)  # all but one frame (e.g. a different intro)
+    misses_allowed = len(pairs) - max(1, len(pairs) - 1)  # all but one (a different intro)
+    for a, b in pairs:
+        if not _frames_match(a, b):
+            misses_allowed -= 1
+            if misses_allowed < 0:
+                return False
+    return True
 
 
 def color_key(main, colorful=1.0):
@@ -233,41 +246,58 @@ def color_key(main, colorful=1.0):
     return (0, group, L if group % 2 == 0 else -L)
 
 
-def _candidate_pairs(names, sigs):
-    """Pairs that could be look-alikes, without comparing everything with everything.
+def _length_bucket(d):
+    """Videos whose lengths could match (within 1 s, or SAME_LENGTH when longer) land in
+    the same or neighbouring buckets."""
+    edge = 1.0 / SAME_LENGTH  # from here on, SAME_LENGTH of the length is more than 1 s
+    if d < edge:
+        return math.floor(d)
+    return math.floor(edge) + math.floor(math.log(d / edge) / math.log(1 + SAME_LENGTH))
 
-    Videos only match ones of about the same length, so they're compared with
-    neighbours in length order. Pictures only match ones whose average colour is
-    within SAME_COLOR (the average of matching cells can't differ by more), so
-    they're put in buckets of that size and compared with the neighbouring ones.
+
+def _color_bucket(color):
+    return tuple(math.floor(v / SAME_COLOR) for v in color)
+
+
+def _neighbour_pairs(buckets):
+    """Every pair within a bucket, and between neighbouring buckets (each pair once)."""
+    for key, members in buckets.items():
+        for i, a in enumerate(members):
+            for b in members[i + 1:]:
+                yield a, b
+        for offset in itertools.product((-1, 0, 1), repeat=len(key)):
+            other = tuple(k + o for k, o in zip(key, offset))
+            if other > key and other in buckets:
+                for a in members:
+                    for b in buckets[other]:
+                        yield a, b
+
+
+def _candidate_pairs(names, sigs):
+    """Pairs that could be look-alikes, without comparing everything with everything
+    (a folder of 15,000 short clips of about the same length would be 100 million pairs).
+
+    Matching frames have average colours within SAME_COLOR of each other (the average
+    of matching cells can't differ by more), so files are put in buckets of that size
+    and only compared with the ones in the same or neighbouring buckets. Videos match
+    when all but one of their frames do, so the first or second frame always matches:
+    they're bucketed by each of those (and by length). A pair can come up twice; the
+    caller skips pairs already joined.
     """
-    videos = sorted((n for n in names if sigs[n]["duration"] > 1),
-                    key=lambda n: sigs[n]["duration"])
-    for i, a in enumerate(videos):
-        da = sigs[a]["duration"]
-        for b in videos[i + 1:]:
-            db = sigs[b]["duration"]
-            if db - da > max(1.0, SAME_LENGTH * db):
-                break
-            yield a, b
+    videos = [n for n in names if sigs[n]["duration"] > 1]
+    for k in (0, 1):
+        buckets = {}
+        for n in videos:
+            frames = sigs[n]["frames"]
+            if k < len(frames) and (k == 0 or len(frames) > 1):
+                key = (_length_bucket(sigs[n]["duration"]),) + _color_bucket(frames[k][2])
+                buckets.setdefault(key, []).append(n)
+        yield from _neighbour_pairs(buckets)
     buckets = {}
     for n in names:
         if sigs[n]["duration"] <= 1:
-            key = tuple(math.floor(v / SAME_COLOR) for v in sigs[n]["mean"])
-            buckets.setdefault(key, []).append(n)
-    for key, members in buckets.items():
-        for i, a in enumerate(members):  # within the bucket
-            for b in members[i + 1:]:
-                yield a, b
-        # and with the neighbouring buckets, each pair once (only "later" neighbours)
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                for dz in (-1, 0, 1):
-                    other = (key[0] + dx, key[1] + dy, key[2] + dz)
-                    if other > key and other in buckets:
-                        for a in members:
-                            for b in buckets[other]:
-                                yield a, b
+            buckets.setdefault(_color_bucket(sigs[n]["mean"]), []).append(n)
+    yield from _neighbour_pairs(buckets)
 
 
 def _could_match(s1, s2):
@@ -307,10 +337,10 @@ def order(names, sigs, keep_together=True):
                                for i in range(3)),
                          sum(sigs[n].get("colorful", 1.0) for n in members) / len(members))
 
-    ordered, labels = [], {}
+    ordered, labels, number = [], {}, 0
     for members in sorted(groups.values(), key=group_key):
         if len(members) > 1:
-            number = len(set(labels.values())) + 1
+            number += 1
             labels.update({n: number for n in members})
         ordered += sorted(members, key=lambda n: (-sigs[n]["duration"], n))
     return ordered + unreadable, labels
