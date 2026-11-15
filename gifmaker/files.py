@@ -168,25 +168,33 @@ def natural_key(name):
     return [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", name.lower())]
 
 
-def _hidden(path, name):
-    if name.startswith(".") or name.lower() in SKIP_NAMES:
-        return True
-    attributes = getattr(os.stat(path), "st_file_attributes", 0)
-    return bool(attributes & 0x6)  # FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM
-
-
-def list_files(folder, extensions=None):
+def list_files(folder, extensions=None, stats=None):
     """Names of the (non-hidden) files directly in folder, in natural order.
 
-    extensions limits it to those (lower-case, with the dot), e.g. {".mp4"}.
+    extensions limits it to those (lower-case, with the dot), e.g. {".mp4"}. stats, if
+    given, is filled with {name: os.stat_result} (size and dates; on Windows no file
+    ID). On Windows all of it comes with the folder listing: asking each file opened it
+    (and let antivirus scan it), which froze the window for a folder of 15,000 videos.
     """
     names = []
-    for name in os.listdir(folder):
-        path = os.path.join(folder, name)
-        if not os.path.isfile(path) or _hidden(path, name):
-            continue
-        if extensions is None or os.path.splitext(name)[1].lower() in extensions:
+    with os.scandir(folder) as entries:
+        for entry in entries:
+            name = entry.name
+            if name.startswith(".") or name.lower() in SKIP_NAMES:
+                continue
+            if extensions is not None and os.path.splitext(name)[1].lower() not in extensions:
+                continue
+            try:
+                if not entry.is_file():
+                    continue
+                st = entry.stat()
+            except OSError:
+                continue
+            if getattr(st, "st_file_attributes", 0) & 0x6:  # hidden or system
+                continue
             names.append(name)
+            if stats is not None:
+                stats[name] = st
     return sorted(names, key=natural_key)
 
 
@@ -213,20 +221,22 @@ def numbered_names(names, prefix="", separator="-", start=1, digits=None):
     return result
 
 
-def rename_all(folder, plan):
+def rename_all(folder, plan, on_progress=None):
     """Rename files in folder: plan is a list of (old name, new name).
 
     Everything is first moved to temporary names and then to the new ones, so
     names can swap around. If anything fails, what was done is put back and
-    OSError is raised. Returns the (old, new) pairs that changed.
+    OSError is raised. Returns the (old, new) pairs that changed. on_progress(0..1)
+    is called now and then (from this thread).
     """
     plan = [(old, new) for old, new in plan if old != new]
     sources = {os.path.normcase(old) for old, _ in plan}
     targets = [os.path.normcase(new) for _, new in plan]
     if len(set(targets)) != len(targets):
         raise OSError("Two files would get the same name.")
+    existing = {os.path.normcase(n) for n in os.listdir(folder)}  # one listing, not a check each
     for _, new in plan:
-        if os.path.exists(os.path.join(folder, new)) and os.path.normcase(new) not in sources:
+        if os.path.normcase(new) in existing and os.path.normcase(new) not in sources:
             raise FileExistsError(f"“{new}” already exists and isn't one of the files "
                                   "being renamed.")
     tag = uuid.uuid4().hex[:8]
@@ -236,6 +246,8 @@ def rename_all(folder, plan):
     def move(src, dst):
         os.rename(os.path.join(folder, src), os.path.join(folder, dst))
         done.append((src, dst))
+        if on_progress and len(done) % 200 == 0:
+            on_progress(len(done) / (2 * len(plan)))
 
     try:
         temps = []

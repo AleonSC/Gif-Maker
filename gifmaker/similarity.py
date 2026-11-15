@@ -322,7 +322,19 @@ def order(names, sigs, keep_together=True):
         return n
 
     if keep_together:
-        for count, (a, b) in enumerate(_candidate_pairs(readable, sigs)):
+        # Exact copies (the same fingerprint) are joined straight away, and only one of
+        # each is compared with the rest: a folder with hundreds of copies of a clip
+        # would otherwise compare every copy with every other.
+        first = {}
+        for n in readable:
+            sig = sigs[n]
+            same = (round(sig["duration"], 2), tuple(f[1] for f in sig["frames"]),
+                    tuple(round(v, 4) for v in sig["mean"]))
+            if same in first:
+                parent[n] = first[same]
+            else:
+                first[same] = n
+        for count, (a, b) in enumerate(_candidate_pairs(list(first.values()), sigs)):
             if count % 2000 == 0:
                 time.sleep(0)  # let the window's thread have a turn (this runs in the background)
             sa, sb = sigs[a], sigs[b]

@@ -935,7 +935,10 @@ class GifMakerApp:
         """Videos and pictures in the current one's folder, in Explorer-like (natural)
         order. Remembered until the folder changes (adding, deleting or renaming a file
         changes its modified time): listing thousands of files each time was slow."""
-        folder = os.path.dirname(os.path.abspath(self.video_path))
+        return self._list_folder(os.path.dirname(os.path.abspath(self.video_path)))
+
+    def _list_folder(self, folder):
+        """_folder_videos() for any folder."""
         try:
             stamp = os.stat(folder).st_mtime_ns
         except OSError:
@@ -1059,8 +1062,14 @@ class GifMakerApp:
         folder = self._folder_videos() if self.video_path else []
         here = os.path.normcase(os.path.abspath(self.video_path)) if self.video_path else None
         if self.slide_shuffle.get():
-            others = [p for p in folder if os.path.normcase(p) != here and os.path.exists(p)]
-            path = random.choice(others) if others else None
+            # Pick at random and check just that one (checking all of a folder of
+            # thousands of files, on Windows, held the window up).
+            path = None
+            for _ in range(20):
+                pick = random.choice(folder) if folder else None
+                if pick and os.path.normcase(pick) != here and os.path.exists(pick):
+                    path = pick
+                    break
         else:
             path = self._neighbour(1, folder)
             if path and not os.path.exists(path):
@@ -1169,7 +1178,8 @@ class GifMakerApp:
             if self.video_path:
                 paths = folder
             else:  # closed (or deleted): keep showing the folder, minus what's gone
-                paths = [p for p in self.browser.paths if os.path.exists(p)]
+                paths = self._list_folder(os.path.dirname(self.browser.paths[0])) \
+                    if self.browser.paths else []
             self.browser.show(paths, self.video_path)
 
     # ------------------------------------------------------- files panel
