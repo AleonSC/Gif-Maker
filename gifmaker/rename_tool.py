@@ -41,6 +41,9 @@ class RenameTool(tk.Toplevel):
         self.media = set(video_extensions) | IMAGE_EXTENSIONS
         self.folder = None
         self.names = []
+        self.stats = {}  # name -> stat from the folder listing (size, dates)
+        self.keys = {}  # name -> colour cache key (worked out in the background)
+        self.renaming = False
         self.swatches = {}
         self.color_token = 0
         self.reading_colors = False
@@ -180,11 +183,15 @@ class RenameTool(tk.Toplevel):
     def reload(self):
         if not self.folder:
             return
+        stats = {}
         try:
-            self.names = files.list_files(self.folder, None if self.all_files.get() else self.media)
+            self.names = files.list_files(self.folder, None if self.all_files.get() else self.media,
+                                          stats)
         except OSError as e:
             messagebox.showerror("Couldn't read the folder", str(e), parent=self)
             self.names = []
+        self.stats = stats
+        self.keys = {}
         if self.order.get() == "Colour":
             self._read_colors()  # shows the list itself
         else:
@@ -197,53 +204,70 @@ class RenameTool(tk.Toplevel):
             self.refresh()
 
     # ------------------------------------------------------------ colour
-    def _color_key(self, name):
-        """Identifies a file's contents but not its name, so fingerprints survive renaming."""
+    @staticmethod
+    def _color_key(folder, name):
+        """Identifies a file's contents but not its name, so fingerprints survive renaming.
+        Asks the file itself (for its ID), which is slow on Windows: only from a thread."""
         try:
-            stat = os.stat(os.path.join(self.folder, name))
+            stat = os.stat(os.path.join(folder, name))
         except OSError:
             return None
         # Some drives (FAT, network) have no file IDs: fall back to the path then.
-        file_id = stat.st_ino or os.path.normcase(os.path.join(self.folder, name))
+        file_id = stat.st_ino or os.path.normcase(os.path.join(folder, name))
         return f"{stat.st_dev}:{file_id}:{stat.st_size}:{stat.st_mtime_ns}"
 
     def _sig(self, name):
-        return _fingerprints().get(self._color_key(name))
+        return _fingerprints().get(self.keys.get(name))
 
     def _read_colors(self):
-        """Fingerprint each file's pictures in the background (saved for next time)."""
-        cache = _fingerprints()
-        todo = [n for n in self.names if self._color_key(n) not in cache]
-        if not todo:
-            self.refresh()
+        """Find each file's colours in the background: its cache key, then (for files not
+        read before) its pictures. Saved for next time."""
+        if self.keys and len(self.keys) == len(self.names) and \
+                all(key in _fingerprints() for key in self.keys.values() if key):
+            self.refresh()  # already known (until the folder is listed again)
             return
         self.color_token += 1
         token, folder, ffmpeg = self.color_token, self.folder, self.app.ffmpeg
+        names = list(self.names)
         self.reading_colors = True
         self.rename_btn.config(state="disabled")
         # Fill the list now, before the readers start: while they work, every call to
         # the window waits its turn behind them.
         self.refresh()
-        done = [0]
-
-        def one(name):
-            if token != self.color_token:
-                return  # the window closed (or the folder changed): skip the rest
-            key = self._color_key(name)
-            sig = sim.fingerprint(ffmpeg, os.path.join(folder, name))
-            if key:
-                cache[key] = sig
-            done[0] += 1
-            self._from_thread(lambda: token == self.color_token and self._color_progress(done[0], len(todo)))
+        workers = max(2, min(6, (os.cpu_count() or 4) - 1))
 
         def work():
-            with ThreadPoolExecutor(max_workers=max(2, min(6, (os.cpu_count() or 4) - 1))) as pool:
+            cache = _fingerprints()
+            keys = {}
+            with ThreadPoolExecutor(max_workers=8) as pool:  # waiting on the disk, mostly
+                for k, (name, key) in enumerate(
+                        zip(names, pool.map(lambda n: self._color_key(folder, n), names))):
+                    if token != self.color_token:
+                        return  # the window closed (or the folder changed)
+                    keys[name] = key
+                    if k % 500 == 0:
+                        self._from_thread(lambda k=k: token == self.color_token and
+                                          self._color_progress(k, len(names), "Checking files"))
+            todo = list({keys[n]: n for n in names if keys[n] and keys[n] not in cache}.values())
+            done = [0]
+
+            def one(name):
+                if token != self.color_token:
+                    return  # skip the rest
+                cache[keys[name]] = sim.fingerprint(ffmpeg, os.path.join(folder, name))
+                done[0] += 1
+                if done[0] % 5 == 0 or done[0] == len(todo):
+                    self._from_thread(lambda: token == self.color_token and
+                                      self._color_progress(done[0], len(todo)))
+
+            with ThreadPoolExecutor(max_workers=workers) as pool:
                 for name in todo:
                     if token != self.color_token:
                         break
                     pool.submit(one, name)
-            sim.save_cache(cache)
-            self._from_thread(lambda: token == self.color_token and self._colors_done())
+            if todo:
+                sim.save_cache(cache)
+            self._from_thread(lambda: token == self.color_token and self._colors_done(keys))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -253,11 +277,12 @@ class RenameTool(tk.Toplevel):
         except (RuntimeError, tk.TclError):
             pass
 
-    def _color_progress(self, done, total):
-        self.progress.config(value=done / total)
-        self.status.set(f"Reading pictures... {done} of {total}")
+    def _color_progress(self, done, total, what="Reading pictures"):
+        self.progress.config(value=done / max(1, total))
+        self.status.set(f"{what}... {done} of {total}")
 
-    def _colors_done(self):
+    def _colors_done(self, keys):
+        self.keys = keys
         self.reading_colors = False
         self.progress.config(value=0)
         self.refresh()
@@ -339,10 +364,21 @@ class RenameTool(tk.Toplevel):
     def _compute_order(self):
         order, folder = self.order.get(), self.folder
         names = list(self.names)
+        stats = self.stats  # from the folder listing: asking each file is slow on Windows
+
+        def stat(n, field):
+            st = stats.get(n)
+            if st is None:
+                try:
+                    st = stats[n] = os.stat(os.path.join(folder, n))
+                except OSError:
+                    return 0
+            return getattr(st, field)
+
         if order == "Date modified":
-            names.sort(key=lambda n: os.path.getmtime(os.path.join(folder, n)))
+            names.sort(key=lambda n: stat(n, "st_mtime"))
         elif order == "Size":
-            names.sort(key=lambda n: os.path.getsize(os.path.join(folder, n)))
+            names.sort(key=lambda n: stat(n, "st_size"))
         self.labels = {}
         if order == "Colour":
             sigs = {n: self._sig(n) for n in names}
@@ -414,6 +450,7 @@ class RenameTool(tk.Toplevel):
             self.status.set(f"{len(plan)} {what}; {changes} will be renamed.{alike}" if plan
                             else "No files to rename here.")
         self.rename_btn.config(state="normal" if changes and not self.reading_colors
+                               and not self.renaming
                                and not sorting else "disabled")
 
     def _fill(self, plan, show_color, start=0, batch=400):
@@ -461,24 +498,50 @@ class RenameTool(tk.Toplevel):
         self._run([(new, old) for old, new in renamed], "Put back", save_undo=False)
 
     def _run(self, plan, done_word, save_undo):
+        if self.renaming:
+            return
         reopen = self.app.release_folder(self.folder)  # nothing may be reading these files
+        self.renaming = True
+        self.rename_btn.config(state="disabled")
+        self.undo_btn.config(state="disabled")
+        self.status.set(f"Renaming {len(plan)} files...")
         self._rename_when_free(plan, done_word, save_undo, reopen, tries=15)
 
     def _rename_when_free(self, plan, done_word, save_undo, reopen, tries):
         # Video players take a moment to let go of their files, and Windows won't
-        # rename a file that's still open, so retry for a couple of seconds.
-        try:
-            renamed = files.rename_all(self.folder, plan)
-        except FileExistsError as e:
-            messagebox.showerror("Can't rename", str(e), parent=self)
+        # rename a file that's still open, so retry for a couple of seconds. Renaming
+        # thousands of files takes a while, so it's done away from the window.
+        folder = self.folder
+
+        def progress(frac):
+            self._from_thread(lambda: self.progress.config(value=frac))
+
+        def work():
+            try:
+                result = files.rename_all(folder, plan, progress)
+            except OSError as e:
+                result = e
+            self._from_thread(lambda: self._renamed(result, plan, done_word, save_undo, reopen,
+                                                    tries))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _renamed(self, result, plan, done_word, save_undo, reopen, tries):
+        if not self.winfo_exists():
             return
-        except OSError as e:
-            if tries > 0:
-                self.after(150, lambda: self._rename_when_free(plan, done_word, save_undo, reopen,
-                                                               tries - 1))
-                return
-            messagebox.showerror("Couldn't rename", str(e), parent=self)
+        if isinstance(result, OSError) and not isinstance(result, FileExistsError) and tries > 0:
+            self.after(150, lambda: self._rename_when_free(plan, done_word, save_undo, reopen,
+                                                           tries - 1))
             return
+        self.renaming = False
+        self.progress.config(value=0)
+        if isinstance(result, OSError):
+            self._update_undo()
+            title = "Can't rename" if isinstance(result, FileExistsError) else "Couldn't rename"
+            messagebox.showerror(title, str(result), parent=self)
+            self.refresh()
+            return
+        renamed = result
         if save_undo:
             files.save_undo(self.folder, renamed)
         else:
@@ -493,6 +556,9 @@ class RenameTool(tk.Toplevel):
         self.undo_btn.config(state="normal" if files.load_undo() else "disabled")
 
     def close(self):
+        if self.renaming:
+            self.status.set("Wait for the renaming to finish.")
+            return
         self.color_token += 1  # stops reading colours
         self.sorting = None
         if self.fill_job:
