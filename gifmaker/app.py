@@ -32,7 +32,8 @@ from .file_browser import FileBrowser
 from .grid_player import GridPlayer
 from .link_dialog import LinkDialog
 from .rename_tool import RenameTool
-from .screen_recorder import RecorderWindow
+from . import hotkey
+from .screen_recorder import RecorderWindow, cursor_monitor, default_folder, take_screenshot
 from .sequence_editor import SequenceEditor
 from .player import Player
 from .timeline import Timeline
@@ -111,6 +112,10 @@ class GifMakerApp:
         self.grid_window = None
         self.rename_window = None
         self.recorder_window = None
+        saved_key = theme.load_setting("screenshot_key", None)
+        self.screenshot_key = saved_key if hotkey.valid(saved_key) else None
+        self.screenshot_hotkey = hotkey.GlobalHotkey(self.take_screenshot)
+        self.screenshot_hotkey.set(self.screenshot_key)
         self.sequence_window = None
         self.view_w, self.view_h = PREVIEW_W, PREVIEW_H  # size of the video area
         self.resize_job = None
@@ -223,6 +228,27 @@ class GifMakerApp:
             self.recorder_window.lift()
             return
         self.recorder_window = RecorderWindow(self, self._recorded)
+
+    def apply_screenshot_key(self, key):
+        """Bind (or with None, remove) the screenshot hotkey; returns an error sentence or None."""
+        error = self.screenshot_hotkey.set(key)
+        if error:
+            self.screenshot_hotkey.set(self.screenshot_key)  # keep the old one
+            return error
+        self.screenshot_key = key
+        theme.save_setting("screenshot_key", key)
+        return None
+
+    def take_screenshot(self):
+        """The screenshot hotkey was pressed: save the screen the mouse is on."""
+        folder = theme.load_setting("record_folder", "") or default_folder()
+        take_screenshot(self.ffmpeg, cursor_monitor(self.root), folder, self._screenshot_done)
+
+    def _screenshot_done(self, path, error):
+        if error:
+            self.status.set(f"Screenshot failed: {error}")
+        else:
+            self.status.set(f"Saved screenshot {path}")
 
     def _recorded(self, path, note):
         self.open_saved(path)
@@ -451,6 +477,7 @@ class GifMakerApp:
             self.sequence_window.cancel_requested = True
             self.sequence_window.busy = False
             self.sequence_window.close()
+        self.screenshot_hotkey.clear()
         self.player.close()
         self.root.destroy()
 
