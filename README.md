@@ -88,6 +88,11 @@ the way while recording, and a small bar shows the time with **Stop and open** a
 Videos\GifMaker recordings unless you pick another folder) and opens straight away, ready
 to clip into GIFs. Hiding the bar from the video needs Windows 10 (version 2004) or later.
 
+**Screenshot key** (in the Record screen window): click it, then press a key combination
+(e.g. Ctrl+Shift+S, F9 or Print Screen). From then on that key saves a PNG of the screen the
+mouse is on, in the same folder as recordings, from anywhere, even with GifMaker minimized
+(GifMaker must still be running). Clear removes it. Windows only.
+
 **Show in folder** (Ctrl+E) opens the folder of the file you're viewing in Explorer, with
 the file selected.
 

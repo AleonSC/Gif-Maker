@@ -20,6 +20,8 @@ import wave
 from tkinter import filedialog, ttk
 
 from . import ffmpeg_tools as ff
+from . import files
+from . import hotkey
 from . import theme
 from . import ui_thread
 from .tooltip import Tooltip
@@ -199,6 +201,56 @@ def grab_input(area, fps, mouse):
                 "-i", "desktop"]
     return ["-f", "x11grab", "-framerate", str(fps), "-draw_mouse", "1" if mouse else "0",
             "-video_size", f"{w}x{h}", "-i", f"{os.environ.get('DISPLAY', ':0')}+{x},{y}"]
+
+
+def cursor_monitor(root):
+    """(x, y, width, height) of the monitor the mouse is on (GifMaker's if unknown)."""
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                        ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+
+        u = _user32()
+        try:
+            pt = wintypes.POINT()
+            u.GetCursorPos(ctypes.byref(pt))
+            u.MonitorFromPoint.restype = ctypes.c_void_p
+            u.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+            u.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            monitor = u.MonitorFromPoint(pt, 2)  # MONITOR_DEFAULTTONEAREST
+            info = MONITORINFO()
+            info.cbSize = ctypes.sizeof(info)
+            if monitor and u.GetMonitorInfoW(monitor, ctypes.byref(info)):
+                r = info.rcMonitor
+                return r.left, r.top, r.right - r.left, r.bottom - r.top
+        except (OSError, ValueError):
+            pass
+    return monitor_of(root)
+
+
+def take_screenshot(ffmpeg, area, folder, on_done):
+    """Save a PNG of area (x, y, w, h) in folder, on a background thread.
+    on_done(path, error) runs on the Tk thread."""
+    def work():
+        try:
+            os.makedirs(folder, exist_ok=True)
+            stamp = datetime.datetime.now().strftime("%Y-%m-%d %H-%M-%S")
+            out = files.free_name(folder, f"Screenshot {stamp}.png")
+            cmd = [ffmpeg, "-y", "-loglevel", "error", *grab_input(area, 1, True),
+                   "-frames:v", "1", out]
+            proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+                                  timeout=20, creationflags=_NO_WINDOW)
+            if proc.returncode != 0 or not os.path.exists(out):
+                raise OSError((proc.stderr or "ffmpeg couldn't grab the screen").strip()[-300:])
+            result = (out, None)
+        except (OSError, subprocess.SubprocessError) as e:
+            result = (None, str(e))
+        ui_thread.call(lambda: on_done(*result))
+
+    threading.Thread(target=work, daemon=True).start()
 
 
 class Recording:
@@ -532,13 +584,67 @@ class RecorderWindow(tk.Toplevel):
                                                                  pady=3)
         ttk.Button(main, text="Browse...", command=self._browse).grid(row=3, column=2,
                                                                      padx=(6, 0), pady=3)
+        ttk.Label(main, text="Screenshot key").grid(row=4, column=0, sticky="w", padx=(0, 10),
+                                                    pady=3)
+        keys = ttk.Frame(main)
+        keys.grid(row=4, column=1, columnspan=2, sticky="w", pady=3)
+        self.key_btn = ttk.Button(keys, width=22, command=self._listen_for_key)
+        self.key_btn.pack(side="left")
+        ttk.Button(keys, text="Clear", command=lambda: self._set_hotkey(None)).pack(
+            side="left", padx=(6, 0))
+        Tooltip(self.key_btn, "Click, then press the keys you want (e.g. Ctrl+Shift+S or F9). "
+                              "It takes a screenshot of the screen the mouse is on, saved in "
+                              "the folder above, from anywhere, even when GifMaker is minimized.")
+        self._show_hotkey()
         ttk.Label(main, textvariable=self.status, style="Muted.TLabel", wraplength=420,
-                  justify="left").grid(row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
+                  justify="left").grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
         buttons = ttk.Frame(main)
-        buttons.grid(row=5, column=0, columnspan=3, sticky="e", pady=(10, 0))
+        buttons.grid(row=6, column=0, columnspan=3, sticky="e", pady=(10, 0))
         self.start_btn = ttk.Button(buttons, text="Start recording", command=self.start)
         self.start_btn.pack(side="left")
         ttk.Button(buttons, text="Close", command=self.close).pack(side="left", padx=(6, 0))
+
+    def _show_hotkey(self):
+        self.key_btn.config(text="Press keys..." if getattr(self, "_listening", False)
+                            else hotkey.describe(self.app.screenshot_key))
+
+    def _listen_for_key(self):
+        if not hotkey.supported():
+            self.status.set("A screenshot key that works anywhere needs Windows.")
+            return
+        self._listening = True
+        self.app.screenshot_hotkey.clear()  # so pressing the current one is just a key press
+        self._show_hotkey()
+        self.status.set("Press the keys you want (Esc cancels).")
+        self.bind("<KeyPress>", self._key_pressed)
+        self.focus_force()
+
+    def _key_pressed(self, event):
+        if event.keysym in ("Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R",
+                            "Win_L", "Win_R", "Meta_L", "Meta_R"):
+            return "break"
+        self.unbind("<KeyPress>")
+        self._listening = False
+        if event.keysym == "Escape":
+            self.status.set("")
+            self.app.apply_screenshot_key(self.app.screenshot_key)
+            self._show_hotkey()
+            return "break"
+        key = hotkey.from_event(event)
+        if key is None:
+            self.status.set("Use a function key, Print Screen, or a combination such as "
+                            "Ctrl+Shift+S.")
+            self.app.apply_screenshot_key(self.app.screenshot_key)
+        else:
+            self._set_hotkey(key)
+        self._show_hotkey()
+        return "break"
+
+    def _set_hotkey(self, key):
+        error = self.app.apply_screenshot_key(key)
+        self.status.set(error or ("Screenshot key removed." if key is None else
+                                  f"Press {hotkey.describe(key)} anywhere to take a screenshot."))
+        self._show_hotkey()
 
     def _area_text(self):
         if not self.area:
