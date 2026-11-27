@@ -24,6 +24,7 @@ from . import files
 from . import hotkey
 from . import theme
 from . import ui_thread
+from .loupe import Loupe, snap
 from .tooltip import Tooltip
 
 FPS_CHOICES = (15, 24, 30, 60)
@@ -408,14 +409,74 @@ class Recording:
 
 
 # ------------------------------------------------------------- windows
+def monitors(root):
+    """(x, y, width, height) of each monitor, in screen pixels."""
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        found = []
+        proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HANDLE, wintypes.HDC,
+                                  ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
+
+        def add(_monitor, _dc, rect, _data):
+            r = rect.contents
+            found.append((r.left, r.top, r.right - r.left, r.bottom - r.top))
+            return True
+
+        try:
+            _user32().EnumDisplayMonitors(None, None, proc(add), 0)
+        except (OSError, AttributeError):
+            found = []
+        if found:
+            return found
+    return [virtual_screen(root)]
+
+
+def grab_screen_ppm(ffmpeg, area):
+    """A picture of area (x, y, w, h) of the screen as PPM bytes, or None."""
+    cmd = [ffmpeg, "-loglevel", "error", *grab_input(area, 30, False), "-frames:v", "1",
+           "-f", "image2pipe", "-vcodec", "ppm", "-"]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=10, creationflags=_NO_WINDOW)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout if proc.returncode == 0 and proc.stdout else None
+
+
 class AreaPicker(tk.Toplevel):
     """Darkens every screen; drag a rectangle to pick the part to record.
-    on_pick((x, y, w, h)) gets it in screen pixels, or None if cancelled (Esc)."""
+    on_pick((x, y, w, h)) gets it in screen pixels, or None if cancelled (Esc).
 
-    def __init__(self, root, on_pick):
+    A magnifier beside the pointer shows exactly where it is (from a picture of the
+    screen taken just before), and the corners snap to the edges of the monitors.
+    """
+
+    def __init__(self, root, on_pick, ffmpeg=None):
         super().__init__(root)
-        self.on_pick = on_pick
-        self.vx, self.vy, vw, vh = virtual_screen(root)
+        self.withdraw()
+        self.root, self.on_pick = root, on_pick
+        self.vx, self.vy, self.vw, self.vh = virtual_screen(root)
+        self.screens = monitors(root)
+        self.shot = None  # the picture of the screen, for the magnifier
+        self.loupe = Loupe(self)
+        if ffmpeg:
+            area = (self.vx, self.vy, self.vw, self.vh)
+            threading.Thread(target=lambda: self._grabbed(grab_screen_ppm(ffmpeg, area)),
+                             daemon=True).start()
+        else:
+            self._open()
+
+    def _grabbed(self, data):
+        ui_thread.call(lambda: self._open(data))
+
+    def _open(self, data=None):
+        if data:
+            try:
+                self.shot = tk.PhotoImage(master=self, data=data, format="ppm")
+            except tk.TclError:
+                self.shot = None
+        root, vw, vh = self.root, self.vw, self.vh
         self.overrideredirect(True)
         # Across every monitor: Tk otherwise caps a window at the main monitor's size,
         # and "+-1920" (not "-1920", which counts from the right edge) is left of it.
@@ -439,16 +500,41 @@ class AreaPicker(tk.Toplevel):
         self.canvas.bind("<ButtonPress-1>", self._press)
         self.canvas.bind("<B1-Motion>", self._drag)
         self.canvas.bind("<ButtonRelease-1>", self._release)
+        self.canvas.bind("<Motion>", self._hover)
+        self.canvas.bind("<Leave>", lambda e: self.loupe.hide())
         self.bind("<Escape>", lambda e: self._done(None))
         self.canvas.bind("<Button-3>", lambda e: self._done(None))
+        self.deiconify()
         self.focus_force()
         self.grab_set()
 
+    def _point(self, event):
+        """The pointer in canvas pixels, pulled onto a monitor's edge when near one."""
+        xs = [e - self.vx for sx, _, sw, _ in self.screens for e in (sx, sx + sw)]
+        ys = [e - self.vy for _, sy, _, sh in self.screens for e in (sy, sy + sh)]
+        return snap(event.x, xs), snap(event.y, ys)
+
+    def _magnify(self, x, y, label=""):
+        if self.shot is None:
+            return
+        sx, sy = x + self.vx, y + self.vy  # on the screen
+        bounds = next(((mx, my, mw, mh) for mx, my, mw, mh in self.screens
+                       if mx <= sx < mx + mw and my <= sy < my + mh),
+                      (self.vx, self.vy, self.vw, self.vh))
+        # (a point on the right or bottom edge shows the last pixel inside it)
+        self.loupe.show(self.shot, min(x, self.vw - 1), min(y, self.vh - 1), sx, sy, label,
+                        bounds)
+
+    def _hover(self, event):
+        if not self.start:
+            x, y = self._point(event)
+            self._magnify(x, y, f"{x + self.vx}, {y + self.vy}")
+
     def _press(self, event):
-        self.start = (event.x, event.y)
+        self.start = self._point(event)
 
     def _box(self, event):
-        (x0, y0), (x1, y1) = self.start, (event.x, event.y)
+        (x0, y0), (x1, y1) = self.start, self._point(event)
         return min(x0, x1), min(y0, y1), abs(x1 - x0), abs(y1 - y0)
 
     def _drag(self, event):
@@ -460,6 +546,7 @@ class AreaPicker(tk.Toplevel):
                                      tags="box")
         self.canvas.create_text(x + 4, y - 4, anchor="sw", fill="white", tags="box",
                                 text=f"{w // 2 * 2} × {h // 2 * 2}")
+        self._magnify(*self._point(event), f"{w // 2 * 2} × {h // 2 * 2}")
 
     def _release(self, event):
         if not self.start:
@@ -468,6 +555,7 @@ class AreaPicker(tk.Toplevel):
         self._done((x + self.vx, y + self.vy, w, h) if w >= 16 and h >= 16 else None)
 
     def _done(self, area):
+        self.loupe.destroy()
         self.grab_release()
         self.destroy()
         self.on_pick(area)
@@ -660,7 +748,7 @@ class RecorderWindow(tk.Toplevel):
 
     def pick_area(self):
         self.withdraw()
-        self.app.root.after(150, lambda: AreaPicker(self.app.root, self._picked))
+        self.app.root.after(150, lambda: AreaPicker(self.app.root, self._picked, self.app.ffmpeg))
 
     def _picked(self, area):
         self.deiconify()

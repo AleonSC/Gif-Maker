@@ -24,7 +24,9 @@ A small Windows desktop app for turning a section of a video into a GIF.
    **FPS**, **Width**, **Colours** and looping there: the preview follows each change, so
    you see the boomerang, the frame rate, the pixel size and the colours straight away.
    They're remembered for next time. You can also rotate, flip or crop it (drag on
-   the picture; pick a crop shape like 1:1 or 16:9 to lock it). **Preview result** makes the
+   the picture; pick a crop shape like 1:1 or 16:9 to lock it). While you drag, a magnifier
+   beside the pointer shows exactly where it is, and the box snaps to the picture's edges when
+   it's near them (keep dragging to pull it away). **Preview result** makes the
    real file and plays it, with its true colours and file size; saving then just keeps it.
    If you've made sections, you can save each one as its own file instead.
 
@@ -87,7 +89,8 @@ whether it starts over at the end. The arrows still work while it runs; F5 or Es
 Pair it with fullscreen (F11).
 
 **Record screen** records the whole screen (the one GifMaker is on) or an area you drag
-out, with the sound the computer plays, at 15 to 60 frames a second. GifMaker steps out of
+out (a magnifier shows exactly where the pointer is, and the corners snap to the edges of
+your screens), with the sound the computer plays, at 15 to 60 frames a second. GifMaker steps out of
 the way while recording, and a small bar shows the time with **Stop and open** and
 **Discard**; the bar isn't in the video. The recording is saved as an MP4 (in
 Videos\GifMaker recordings unless you pick another folder) and opens straight away, ready
