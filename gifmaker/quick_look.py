@@ -17,6 +17,7 @@ from tkinter import filedialog, font, messagebox, ttk
 
 from . import ffmpeg_tools as ff
 from . import files
+from . import seen
 from . import sort_keys
 from . import theme
 from . import ui_thread
@@ -68,6 +69,9 @@ class QuickLook(tk.Toplevel):
         self.bind("<F2>", lambda e: self._key(e, self.start_rename))
         self.bind("<Delete>", lambda e: self._key(e, self.delete))
         self.bind("<Control-e>", lambda e: self._key(e, self.reveal))
+        for key, state in (("s", seen.SEEN), ("u", seen.UNSEEN)):
+            for k in (key, key.upper()):
+                self.bind(k, lambda e, st=state: self._key(e, lambda: self.mark_as(st)))
         self.bind("<ButtonPress>", self._press, add="+")
         self.bind("<FocusOut>", lambda e: self.after(80, self._check_focus))
 
@@ -109,6 +113,16 @@ class QuickLook(tk.Toplevel):
         self._separator()
         self._item("Open", "Enter", self.open_in_main, bold=True)
         self._separator()
+        state = seen.get(self.path) if self.path else None
+        if state != seen.SEEN:
+            self._item("Mark as seen", "S", lambda: self.mark_as(seen.SEEN),
+                       color=seen.COLORS[seen.SEEN])
+        if state != seen.UNSEEN:
+            self._item("Mark as unseen", "U", lambda: self.mark_as(seen.UNSEEN),
+                       color=seen.COLORS[seen.UNSEEN])
+        if state:
+            self._item("Clear mark", "", lambda: self.mark_as(None))
+        self._separator()
         self._item("Rename", "F2", self.start_rename)
         self._item("Move to folder...", "", lambda: self.move_or_copy(copy=False))
         self._item("Copy to folder...", "", lambda: self.move_or_copy(copy=True))
@@ -130,10 +144,14 @@ class QuickLook(tk.Toplevel):
         holder.pack(fill="x")
         tk.Frame(holder, bg=border, height=1).pack(fill="x")
 
-    def _item(self, text, shortcut, command, bold=False):
+    def _item(self, text, shortcut, command, bold=False, color=None):
         bg, fg, muted, sel, sel_fg, _ = self._colors()
         row = tk.Frame(self.menu, bg=bg, padx=12, pady=4, cursor="hand2")
         row.pack(fill="x", padx=3)
+        if color:  # a swatch of the mark's colour
+            swatch = tk.Frame(row, bg=color, width=10, height=10)
+            swatch.pack(side="left", padx=(0, 6))
+            swatch.bind("<ButtonRelease-1>", lambda e: command())
         name = tk.Label(row, text=text, bg=bg, fg=fg, anchor="w",
                         font=self.bold_font if bold else self.menu_font)
         name.pack(side="left")
@@ -348,6 +366,17 @@ class QuickLook(tk.Toplevel):
                 self.app.rename_window.reload()
             except Exception:  # noqa: BLE001 - the rename tool refreshing is a nicety
                 pass
+
+    def mark_as(self, state):
+        """Mark the file seen or unseen (None clears it); kept between sessions."""
+        path = self.path
+        self.close()
+        if not path:
+            return
+        seen.mark(path, state)
+        self.app.browser.redraw(path)
+        name = os.path.basename(path)
+        self.app.status.set(f"Marked {name} as {state}." if state else f"Cleared the mark on {name}.")
 
     def open_in_main(self):
         path = self.path

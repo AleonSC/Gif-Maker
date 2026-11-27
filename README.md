@@ -71,6 +71,11 @@ file beside it (videos play silently): Open, Rename (F2), Move or Copy to a fold
 straight to one of your sort-key folders), Show in folder, Copy path, and Delete (Del).
 Clicking anywhere else or Esc closes it.
 
+**Seen / unseen:** the same menu marks a file **seen** (S, green) or **unseen** (U, red), or
+clears the mark; the Files panel shows it as a coloured frame and name. Marks are kept
+between sessions (in %APPDATA%\GifMaker\seen.json), follow files GifMaker renames or
+moves, and still find files moved or renamed in Explorer (by their size and date).
+
 Pictures open too (JPG, PNG, BMP, WebP, TIFF, and camera RAW photos: CR2, NEF, ARW, DNG,
 RAF, ORF, RW2, PEF and others, shown from the full-size JPEG the camera keeps inside; a RAW
 photo can't be replaced, only saved as a copy): the timeline and video controls step aside,
