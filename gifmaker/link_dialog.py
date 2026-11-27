@@ -1,11 +1,11 @@
-"""The "Open link" window: download a video from a site and open it."""
+"""The "Download link" window: download a video from a site and open it."""
 
 import os
 import subprocess
 import threading
 import time
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import ttk
 
 from . import downloader
 from . import theme
@@ -22,7 +22,7 @@ class LinkDialog(tk.Toplevel):
     def __init__(self, app, url="", on_done=None):
         super().__init__(app.root)
         self.app, self.on_done = app, on_done
-        self.title("Open link")
+        self.title("Download link")
         self.transient(app.root)
         self.resizable(True, False)
         theme.style_window(self)
@@ -70,19 +70,16 @@ class LinkDialog(tk.Toplevel):
         Tooltip(quality, "The highest quality to get (lower downloads faster). "
                          "Saved as MP4 where the site allows.")
 
-        ttk.Label(main, text="Logged in").grid(row=2, column=0, sticky="w", padx=(0, 10), pady=4)
-        login = ttk.Combobox(main, textvariable=self.login, state="readonly", width=18,
-                             values=[NO_LOGIN, *downloader.BROWSERS])
-        login.grid(row=2, column=1, sticky="w", pady=4)
-        Tooltip(login, "For videos you can only watch logged in (e.g. as a subscriber): pick "
-                       "the browser you're logged in to the site with, and the download "
-                       "uses that login. Firefox works best; Chrome and Edge lock their "
-                       "logins away from other programs.")
-
-        ttk.Label(main, text="Save in").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=4)
-        ttk.Entry(main, textvariable=self.folder).grid(row=3, column=1, sticky="ew", pady=4)
-        ttk.Button(main, text="Browse...", command=self._browse).grid(
-            row=3, column=2, sticky="w", padx=(6, 0), pady=4)
+        info = ttk.Frame(main)
+        info.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        self.summary = ttk.Label(info, text=self._summary(), style="Muted.TLabel", width=1)
+        self.summary.pack(side="left", fill="x", expand=True)
+        change = ttk.Button(info, text="Settings...",
+                            command=lambda: self.app.open_settings("Downloads"))
+        change.pack(side="right", padx=(8, 0))
+        Tooltip(change, "Where downloads are saved, and the browser login for videos you "
+                        "can only watch logged in")
+        self.bind("<FocusIn>", lambda e: self._settings_changed())
 
         self.progress = ttk.Progressbar(main, maximum=1.0)
         self.progress.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(10, 2))
@@ -95,11 +92,21 @@ class LinkDialog(tk.Toplevel):
         self.go_btn.pack(side="left")
         ttk.Button(buttons, text="Cancel", command=self.close).pack(side="left", padx=(6, 0))
 
-    def _browse(self):
-        folder = filedialog.askdirectory(parent=self, title="Save downloads in",
-                                         initialdir=self.folder.get() or None)
-        if folder:
-            self.folder.set(os.path.normpath(folder))
+    def _load_settings(self):
+        """Where to save and the login, as set in Settings › Downloads."""
+        login = theme.load_setting("download_login", NO_LOGIN)
+        self.login.set(login if login in downloader.BROWSERS else NO_LOGIN)
+        self.folder.set(theme.load_setting("download_folder", "") or downloader.default_folder())
+
+    def _summary(self):
+        login = self.login.get()
+        who = f"logged in with {login}" if login in downloader.BROWSERS else "not logged in"
+        return f"Saved in {self.folder.get()}  \u00B7  {who}"
+
+    def _settings_changed(self):
+        if not self.busy:
+            self._load_settings()
+            self.summary.config(text=self._summary())
 
     def _set_status(self, text, frac=None):
         if self.winfo_exists():
@@ -114,6 +121,7 @@ class LinkDialog(tk.Toplevel):
     def start(self):
         if self.busy:
             return
+        self._load_settings()
         url, folder = self.url.get().strip(), self.folder.get().strip()
         if not downloader.looks_like_link(url):
             self.status.set("Paste the video's link (starting with http).")
@@ -124,8 +132,6 @@ class LinkDialog(tk.Toplevel):
             self.status.set(f"Can't use that folder: {e}")
             return
         theme.save_setting("download_quality", self.quality.get())
-        theme.save_setting("download_folder", folder)
-        theme.save_setting("download_login", self.login.get())
         self._download(url, folder, item=None)
 
     def _download(self, url, folder, item, title=None):

@@ -21,7 +21,6 @@ from tkinter import filedialog, ttk
 
 from . import ffmpeg_tools as ff
 from . import files
-from . import hotkey
 from . import theme
 from . import ui_thread
 from .loupe import Loupe, snap
@@ -617,122 +616,93 @@ class RecorderWindow(tk.Toplevel):
         self.what = tk.StringVar(value=theme.load_setting("record_what", "screen"))
         if self.what.get() == "area" and not self.area:
             self.what.set("screen")
-        self.fps = tk.StringVar(value=str(theme.load_setting("record_fps", 30)))
-        self.mouse = tk.BooleanVar(value=theme.load_setting("record_mouse", True))
-        self.sound = tk.BooleanVar(value=theme.load_setting("record_sound", True))
-        self.hide_app = tk.BooleanVar(value=theme.load_setting("record_hide", True))
-        self.folder = tk.StringVar(value=theme.load_setting("record_folder", "") or default_folder())
-        self.status = tk.StringVar()
+        self.fps = tk.StringVar()
+        self.mouse = tk.BooleanVar()
+        self.sound = tk.BooleanVar()
+        self.hide_app = tk.BooleanVar()
+        self.folder = tk.StringVar()
         self.no_sound = sound_available()
+        self._load_settings()
+        self.status = tk.StringVar()
         self._build()
         self.protocol("WM_DELETE_WINDOW", self.close)
         self.bind("<Escape>", lambda e: self.close())
 
+    def _load_settings(self):
+        """The recording settings, as set in Settings › Recording."""
+        self.fps.set(str(theme.load_setting("record_fps", 30)))
+        self.mouse.set(bool(theme.load_setting("record_mouse", True)))
+        self.sound.set(bool(theme.load_setting("record_sound", True)) and not self.no_sound)
+        self.hide_app.set(bool(theme.load_setting("record_hide", True)))
+        self.folder.set(theme.load_setting("record_folder", "") or default_folder())
+
+    def _summary(self):
+        parts = [f"{self.fps.get()} fps",
+                 "with sound" if self.sound.get() else "no sound",
+                 "mouse shown" if self.mouse.get() else "no mouse",
+                 f"saved in {self.folder.get()}"]
+        return "  \u00B7  ".join(parts)
+
     def _build(self):
+        """What to record, the settings in a line (changed in Settings), and the buttons."""
         main = ttk.Frame(self, padding=12)
         main.pack(fill="both", expand=True)
-        main.columnconfigure(1, weight=1)
-        ttk.Label(main, text="Record").grid(row=0, column=0, sticky="nw", padx=(0, 10), pady=3)
-        what = ttk.Frame(main)
-        what.grid(row=0, column=1, columnspan=2, sticky="w", pady=3)
+        what = ttk.LabelFrame(main, text="What to record", padding=(10, 6))
+        what.pack(fill="x")
         ttk.Radiobutton(what, text="The whole screen (the one GifMaker is on)",
-                        variable=self.what, value="screen").pack(anchor="w")
+                        variable=self.what, value="screen").pack(anchor="w", pady=1)
         row = ttk.Frame(what)
         row.pack(anchor="w", pady=(2, 0))
         self.area_radio = ttk.Radiobutton(row, variable=self.what, value="area",
                                           text=self._area_text())
         self.area_radio.pack(side="left")
-        ttk.Button(row, text="Pick an area...", command=self.pick_area).pack(side="left", padx=(8, 0))
-
-        ttk.Label(main, text="Frame rate").grid(row=1, column=0, sticky="w", padx=(0, 10), pady=3)
-        fps = ttk.Combobox(main, textvariable=self.fps, state="readonly", width=6,
-                           values=[str(f) for f in FPS_CHOICES])
-        fps.grid(row=1, column=1, sticky="w", pady=3)
-        Tooltip(fps, "Frames per second. 30 is smooth; 60 for games and fast motion "
-                     "(bigger files).")
-
-        options = ttk.Frame(main)
-        options.grid(row=2, column=1, columnspan=2, sticky="w", pady=3)
-        sound = ttk.Checkbutton(options, text="Record the computer's sound", variable=self.sound)
-        sound.pack(anchor="w")
-        if self.no_sound:
-            self.sound.set(False)
-            sound.config(state="disabled")
-            Tooltip(sound, self.no_sound)
-        else:
-            Tooltip(sound, "What plays through your speakers or headphones "
-                           "(not the microphone)")
-        ttk.Checkbutton(options, text="Show the mouse pointer", variable=self.mouse).pack(anchor="w")
-        hide = ttk.Checkbutton(options, text="Hide GifMaker while recording",
-                               variable=self.hide_app)
-        hide.pack(anchor="w")
-
-        ttk.Label(main, text="Save in").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=3)
-        ttk.Entry(main, textvariable=self.folder, width=46).grid(row=3, column=1, sticky="ew",
-                                                                 pady=3)
-        ttk.Button(main, text="Browse...", command=self._browse).grid(row=3, column=2,
-                                                                     padx=(6, 0), pady=3)
-        ttk.Label(main, text="Screenshot key").grid(row=4, column=0, sticky="w", padx=(0, 10),
-                                                    pady=3)
-        keys = ttk.Frame(main)
-        keys.grid(row=4, column=1, columnspan=2, sticky="w", pady=3)
-        self.key_btn = ttk.Button(keys, width=22, command=self._listen_for_key)
-        self.key_btn.pack(side="left")
-        ttk.Button(keys, text="Clear", command=lambda: self._set_hotkey(None)).pack(
-            side="left", padx=(6, 0))
-        Tooltip(self.key_btn, "Click, then press the keys you want (e.g. Ctrl+Shift+S or F9). "
-                              "It takes a screenshot of the screen the mouse is on, saved in "
-                              "the folder above, from anywhere, even when GifMaker is minimized.")
-        self._show_hotkey()
-        ttk.Label(main, textvariable=self.status, style="Muted.TLabel", wraplength=420,
-                  justify="left").grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        ttk.Button(row, text="Pick an area...", command=self.pick_area).pack(side="left",
+                                                                           padx=(8, 0))
+        info = ttk.Frame(main)
+        info.pack(fill="x", pady=(10, 0))
+        self.summary = ttk.Label(info, text=self._summary(), style="Muted.TLabel",
+                                 wraplength=380, justify="left")
+        self.summary.pack(side="left", fill="x", expand=True)
+        change = ttk.Button(info, text="Settings...",
+                            command=lambda: self.app.open_settings("Recording"))
+        change.pack(side="right", padx=(8, 0))
+        Tooltip(change, "Frame rate, sound, mouse pointer, where recordings are saved, "
+                        "and the screenshot key")
+        self.bind("<FocusIn>", lambda e: self._settings_changed())
+        ttk.Label(main, textvariable=self.status, style="Muted.TLabel", wraplength=460,
+                  justify="left").pack(anchor="w", pady=(6, 0))
         buttons = ttk.Frame(main)
-        buttons.grid(row=6, column=0, columnspan=3, sticky="e", pady=(10, 0))
+        buttons.pack(fill="x", pady=(10, 0))
+        shot = ttk.Button(buttons, text="Take screenshot", command=self.screenshot)
+        shot.pack(side="left")
+        Tooltip(shot, "Save a picture of what's chosen above (as a PNG, in the same folder)")
+        ttk.Button(buttons, text="Close", command=self.close).pack(side="right")
         self.start_btn = ttk.Button(buttons, text="Start recording", command=self.start)
-        self.start_btn.pack(side="left")
-        ttk.Button(buttons, text="Close", command=self.close).pack(side="left", padx=(6, 0))
+        self.start_btn.pack(side="right", padx=(0, 6))
 
-    def _show_hotkey(self):
-        self.key_btn.config(text="Press keys..." if getattr(self, "_listening", False)
-                            else hotkey.describe(self.app.screenshot_key))
+    def _settings_changed(self):
+        self._load_settings()
+        self.summary.config(text=self._summary())
 
-    def _listen_for_key(self):
-        if not hotkey.supported():
-            self.status.set("A screenshot key that works anywhere needs Windows.")
-            return
-        self._listening = True
-        self.app.screenshot_hotkey.clear()  # so pressing the current one is just a key press
-        self._show_hotkey()
-        self.status.set("Press the keys you want (Esc cancels).")
-        self.bind("<KeyPress>", self._key_pressed)
-        self.focus_force()
+    def _chosen_area(self):
+        root = self.app.root
+        area = self.area if self.what.get() == "area" and self.area else monitor_of(root)
+        return _even_area(area, virtual_screen(root))
 
-    def _key_pressed(self, event):
-        if event.keysym in ("Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R",
-                            "Win_L", "Win_R", "Meta_L", "Meta_R"):
-            return "break"
-        self.unbind("<KeyPress>")
-        self._listening = False
-        if event.keysym == "Escape":
-            self.status.set("")
-            self.app.apply_screenshot_key(self.app.screenshot_key)
-            self._show_hotkey()
-            return "break"
-        key = hotkey.from_event(event)
-        if key is None:
-            self.status.set("Use a function key, Print Screen, or a combination such as "
-                            "Ctrl+Shift+S.")
-            self.app.apply_screenshot_key(self.app.screenshot_key)
-        else:
-            self._set_hotkey(key)
-        self._show_hotkey()
-        return "break"
+    def screenshot(self):
+        """Save a picture of the chosen screen or area, with this window out of the way."""
+        self._load_settings()
+        area, folder = self._chosen_area(), self.folder.get().strip() or default_folder()
+        theme.save_setting("record_what", self.what.get())
+        self.withdraw()
 
-    def _set_hotkey(self, key):
-        error = self.app.apply_screenshot_key(key)
-        self.status.set(error or ("Screenshot key removed." if key is None else
-                                  f"Press {hotkey.describe(key)} anywhere to take a screenshot."))
-        self._show_hotkey()
+        def done(path, error):
+            self.deiconify()
+            self.lift()
+            self.status.set(f"Couldn't take the screenshot: {error}" if error
+                            else f"Saved {path}")
+
+        self.after(300, lambda: take_screenshot(self.app.ffmpeg, area, folder, done))
 
     def _area_text(self):
         if not self.area:
@@ -761,16 +731,11 @@ class RecorderWindow(tk.Toplevel):
 
     def _save_settings(self):
         theme.save_setting("record_what", self.what.get())
-        theme.save_setting("record_fps", int(self.fps.get()))
-        theme.save_setting("record_mouse", self.mouse.get())
-        if not self.no_sound:
-            theme.save_setting("record_sound", self.sound.get())
-        theme.save_setting("record_hide", self.hide_app.get())
-        theme.save_setting("record_folder", self.folder.get())
 
     def start(self):
         if self.recording:
             return
+        self._load_settings()
         folder = self.folder.get().strip() or default_folder()
         try:
             os.makedirs(folder, exist_ok=True)
@@ -779,9 +744,7 @@ class RecorderWindow(tk.Toplevel):
             return
         self._save_settings()
         root = self.app.root
-        screen = monitor_of(root)
-        area = self.area if self.what.get() == "area" and self.area else screen
-        area = _even_area(area, virtual_screen(root))
+        area = self._chosen_area()
         stamp = datetime.datetime.now().strftime("%Y-%m-%d %H-%M-%S")
         out = os.path.join(folder, f"Recording {stamp}.mp4")
         self.recording = Recording(self.app.ffmpeg, area, int(self.fps.get()), self.mouse.get(),

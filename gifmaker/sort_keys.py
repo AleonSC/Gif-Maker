@@ -2,7 +2,6 @@
 
 import os
 import sys
-import tkinter as tk
 from tkinter import filedialog, ttk
 
 from . import theme
@@ -52,28 +51,26 @@ def summary(keys):
     return "\n".join(f"{label(k)}  →  {f}" for k, f in _ordered(keys))
 
 
-class SortKeysWindow(tk.Toplevel):
-    """Set which key sorts to which folder. on_change(keys) gets each change."""
+class SortKeysPanel(ttk.Frame):
+    """Set which key sorts to which folder (a page of the Settings window).
+    on_change(keys) gets each change; the window passes its key presses to on_key()."""
 
-    def __init__(self, app, on_change):
-        super().__init__(app.root)
+    def __init__(self, master, app, on_change):
+        super().__init__(master)
         self.app, self.on_change = app, on_change
         self.keys = load()
         self.waiting = None  # the folder a key is being pressed for
-        self.title("Sort keys")
-        self.transient(app.root)
-        theme.style_window(self)
         self._build()
         self._fill()
-        self.protocol("WM_DELETE_WINDOW", self.destroy)
-        self.bind("<Key>", self._key_pressed)
-        self.focus_set()
+
+    def on_key(self, event):
+        return self._key_pressed(event)
 
     def _build(self):
-        main = ttk.Frame(self, padding=12)
-        main.pack(fill="both", expand=True)
-        ttk.Label(main, text="Press a key while viewing a file to move it to that key's folder "
-                             "and open the next one. Ctrl+Z puts the last one back.",
+        main = self
+        ttk.Label(main, text="Press a key while looking at a file (in the library or the "
+                             "editor) to move it to that key's folder. Ctrl+Z puts the last "
+                             "one back.",
                   style="Muted.TLabel", wraplength=460, justify="left").pack(anchor="w")
         table = ttk.Frame(main)
         table.pack(fill="both", expand=True, pady=(8, 8))
@@ -101,7 +98,6 @@ class SortKeysWindow(tk.Toplevel):
         self.folder_btn.pack(side="left", padx=(4, 0))
         self.remove_btn = ttk.Button(buttons, text="Remove", command=self.remove)
         self.remove_btn.pack(side="left", padx=(4, 0))
-        ttk.Button(buttons, text="Close", command=self.destroy).pack(side="right")
         self.prompt = ttk.Label(main, text="", style="Muted.TLabel")
         self.prompt.pack(anchor="w", pady=(8, 0))
 
@@ -135,7 +131,8 @@ class SortKeysWindow(tk.Toplevel):
         return os.path.normpath(folder) if folder else None
 
     def add(self):
-        start = self.app.video_path and os.path.dirname(self.app.video_path)
+        start = (self.app.video_path and os.path.dirname(self.app.video_path)) or \
+            getattr(self.app.library, "folder", None)
         folder = self._pick_folder(start)
         if folder:
             self._wait_for_key(folder, None)
@@ -164,7 +161,7 @@ class SortKeysWindow(tk.Toplevel):
         self.prompt.config(text=f"Press the key for {os.path.basename(folder) or folder}  "
                                 "(a letter, a number, or F1, F4, F6–F10, F12; Esc to cancel)",
                            style="TLabel")
-        self.focus_force()
+        self.winfo_toplevel().focus_force()
 
     def _key_pressed(self, event):
         if not self.waiting:

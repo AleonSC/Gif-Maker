@@ -11,6 +11,7 @@ from . import files
 from . import raw_photos
 from . import similarity as sim
 from . import theme
+from . import toolbar
 from . import ui_thread
 from .tooltip import Tooltip
 
@@ -85,21 +86,21 @@ class RenameTool(tk.Toplevel):
         main = ttk.Frame(self, padding=10)
         main.pack(fill="both", expand=True)
 
-        top = ttk.Frame(main)
-        top.pack(fill="x")
-        ttk.Button(top, text="Choose folder...", command=self.choose_folder).pack(side="left")
-        self.folder_label = ttk.Label(top, text="No folder chosen", style="Muted.TLabel")
-        self.folder_label.pack(side="left", padx=10)
-        include = ttk.Frame(main)
-        include.pack(fill="x", pady=(6, 0))
-        ttk.Label(include, text="Rename:").pack(side="left")
-        ttk.Radiobutton(include, text="Videos and images", value=False, variable=self.all_files,
-                        command=self.reload).pack(side="left", padx=(8, 0))
-        ttk.Radiobutton(include, text="All files", value=True, variable=self.all_files,
-                        command=self.reload).pack(side="left", padx=(8, 0))
-        ttk.Label(include, style="Muted.TLabel",
-                  text="(only files directly in the folder; hidden and system files are left alone)"
-                  ).pack(side="left", padx=(10, 0))
+        bar = ttk.Frame(main)
+        bar.pack(fill="x")
+        g = toolbar.group(bar, "Folder")
+        toolbar.add(g, ttk.Button(g, text="Choose folder...", command=self.choose_folder))
+        self.folder_label = toolbar.add(g, ttk.Label(g, text="No folder chosen",
+                                                     style="Muted.TLabel"), gap=10)
+        bar = ttk.Frame(main)
+        bar.pack(fill="x", pady=(6, 0))
+        g = toolbar.group(bar, "Rename")
+        for text, value in (("Videos and images", False), ("All files", True)):
+            radio = toolbar.add(g, ttk.Radiobutton(g, text=text, value=value,
+                                                   variable=self.all_files, command=self.reload),
+                                gap=10)
+            Tooltip(radio, "Only files directly in the folder; hidden and system files are "
+                           "left alone")
 
         options = ttk.Frame(main)
         options.pack(fill="x", pady=(8, 0))

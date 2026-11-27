@@ -13,6 +13,7 @@ from . import ffmpeg_tools as ff
 from . import files
 from . import screen_recorder as rec
 from . import theme
+from . import toolbar
 from . import ui_thread
 from .player import Player
 from .timeline import Timeline
@@ -53,39 +54,40 @@ class GridPlayer(tk.Toplevel):
         self.minsize(520, 400)
         theme.style_window(self)
 
-        bar = ttk.Frame(self, padding=(8, 6))
+        bar = ttk.Frame(self, padding=(10, 6))
         bar.pack(fill="x")
-        ttk.Button(bar, text="Add...", command=self.add_videos).pack(side="left")
-        ttk.Button(bar, text="Arrange", command=self.arrange).pack(side="left", padx=(6, 0))
-        ttk.Button(bar, text="▶ Play all", command=lambda: self._all("play")).pack(side="left", padx=(16, 0))
-        ttk.Button(bar, text="❚❚ Pause all", command=lambda: self._all("pause")).pack(side="left", padx=4)
-        ttk.Button(bar, text="Remove all", command=self.remove_all).pack(side="left", padx=(12, 0))
-        ttk.Checkbutton(bar, text="Snap to grid", variable=self.snap).pack(side="left", padx=(16, 0))
-        panels = ttk.Checkbutton(bar, text="Snap to other panels", variable=self.snap_panels)
-        panels.pack(side="left", padx=(8, 0))
+        g = toolbar.group(bar, "Panels")
+        toolbar.add(g, ttk.Button(g, text="Add...", command=self.add_videos))
+        toolbar.add(g, ttk.Button(g, text="Arrange", command=self.arrange))
+        toolbar.add(g, ttk.Button(g, text="Remove all", command=self.remove_all))
+        g = toolbar.group(bar, "Playback")
+        toolbar.add(g, ttk.Button(g, text="▶ Play all", command=lambda: self._all("play")))
+        toolbar.add(g, ttk.Button(g, text="❚❚ Pause all", command=lambda: self._all("pause")))
+        g = toolbar.group(bar, "Snap")
+        toolbar.add(g, ttk.Checkbutton(g, text="To grid", variable=self.snap))
+        panels = toolbar.add(g, ttk.Checkbutton(g, text="To other panels",
+                                                variable=self.snap_panels), gap=10)
         Tooltip(panels, "While dragging or resizing, edges snap to nearby panels' edges and "
                         "the window's (lining up, or side by side)")
 
-        self.rec_btn = ttk.Button(bar, text="● Record", command=self.toggle_recording)
-        self.rec_btn.pack(side="right", padx=(16, 0))
+        g = toolbar.group(bar, "Record", side="right")
+        self.rec_btn = toolbar.add(g, ttk.Button(g, text="● Record",
+                                                 command=self.toggle_recording))
         Tooltip(self.rec_btn, "Record the panels area (not this toolbar) to a video, with "
                               "the sound the panels play. Keep the window where it is and "
-                              "uncovered while recording. Uses Record screen's frame rate, "
-                              "mouse and folder settings.")
-        delete = ttk.Button(bar, text="Delete", command=self.delete_layout)
-        delete.pack(side="right")
-        Tooltip(delete, "Forget the chosen layout")
-        save = ttk.Button(bar, text="Save layout...", command=self.save_layout)
-        save.pack(side="right", padx=(4, 4))
-        Tooltip(save, "Remember where the panels are and how big (not what's in them), "
-                      "to use again with any videos")
-        self.layout_box = ttk.Combobox(bar, textvariable=self.layout_name, state="readonly",
-                                       width=16)
-        self.layout_box.pack(side="right")
+                              "uncovered while recording. Uses the frame rate, mouse and "
+                              "folder from Settings › Recording.")
+        g = toolbar.group(bar, "Layout", side="right")
+        self.layout_box = toolbar.add(g, ttk.Combobox(g, textvariable=self.layout_name,
+                                                      state="readonly", width=12))
         self.layout_box.bind("<<ComboboxSelected>>", lambda e: self.apply_layout())
         Tooltip(self.layout_box, "Put the panels in a saved layout (videos added after "
                                  "that fill its empty spots)")
-        ttk.Label(bar, text="Layout").pack(side="right", padx=(16, 4))
+        save = toolbar.add(g, ttk.Button(g, text="Save...", command=self.save_layout))
+        Tooltip(save, "Remember where the panels are and how big (not what's in them), "
+                      "to use again with any videos")
+        delete = toolbar.add(g, ttk.Button(g, text="Delete", command=self.delete_layout))
+        Tooltip(delete, "Forget the chosen layout")
         self._refresh_layouts()
 
         self.area = tk.Frame(self, bg=DARK)
