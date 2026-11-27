@@ -19,6 +19,7 @@ from . import sort_keys
 from . import theme
 from . import ui_thread
 from .player import Player
+from .screen_recorder import cursor_monitor
 
 MAX_FPS = 30
 MIN_PREVIEW = (240, 180)  # the preview area is never smaller than this
@@ -48,6 +49,7 @@ class QuickLook(tk.Toplevel):
         self.token = 0  # bumped on each file: stale frame grabs are dropped
         self.photo = None
         self.anchor = (0, 0)  # where the mouse was
+        self.screen = (0, 0, 0, 0)  # the monitor it was opened on: x, y, width, height
         self.renaming = None
         self.shown_at = 0.0
         self.items = []  # (row frame, labels) of the menu, for hover colours
@@ -174,6 +176,7 @@ class QuickLook(tk.Toplevel):
         self.info = None
         self.photo = None
         self.anchor = (x, y)
+        self.screen = cursor_monitor(self.app.root)
         self._fill_menu()
         self._update_labels()
         self._size_preview(*MIN_PREVIEW)
@@ -199,8 +202,12 @@ class QuickLook(tk.Toplevel):
         threading.Thread(target=work, daemon=True).start()
 
     def _max_preview(self):
-        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        return int(min(800, sw * 0.5)), int(min(600, sh * 0.6))
+        """The biggest the picture can be: the monitor less the menu beside it."""
+        _, _, sw, sh = self.screen
+        self.update_idletasks()
+        margin = 40  # breathing room and the border
+        return (max(MIN_PREVIEW[0], sw - self.menu.winfo_reqwidth() - margin),
+                max(MIN_PREVIEW[1], sh - margin))
 
     def _size_preview(self, w, h):
         self.canvas.config(width=w, height=h)
@@ -212,12 +219,14 @@ class QuickLook(tk.Toplevel):
         """Put it at the mouse, flipped left or up where it would go off the screen."""
         self.update_idletasks()
         w, h = self.winfo_reqwidth(), self.winfo_reqheight()
-        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        left, top, sw, sh = self.screen
         x, y = self.anchor
-        if x + w > sw:
-            x = max(0, x - w)
-        if y + h > sh:
-            y = max(0, sh - h)
+        if x + w > left + sw:
+            x = x - w
+        if y + h > top + sh:
+            y = top + sh - h
+        x = min(max(x, left), left + max(0, sw - w))
+        y = min(max(y, top), top + max(0, sh - h))
         self.geometry(f"+{x}+{y}")
 
     def _probed(self, token, info):
@@ -228,7 +237,7 @@ class QuickLook(tk.Toplevel):
             return
         self.info = info
         self._update_labels()
-        w, h = ff.fit_size(info.width, info.height, *self._max_preview(), upscale=False)
+        w, h = ff.fit_size(info.width, info.height, *self._max_preview(), upscale=True)
         self._size_preview(max(w, MIN_PREVIEW[0]), max(h, MIN_PREVIEW[1]))
         self._place()
         if info.duration > 0 and not ff.is_image(self.path):
