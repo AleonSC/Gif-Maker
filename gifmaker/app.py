@@ -982,8 +982,10 @@ class GifMakerApp:
 
         try:
             with os.scandir(folder) as entries:  # file types come with the listing
+                # "._" files are macOS metadata stubs (AppleDouble), not real media.
                 names = [e.name for e in entries
-                         if os.path.splitext(e.name)[1].lower() in MEDIA_EXTENSIONS and e.is_file()]
+                         if not e.name.startswith("._")
+                         and os.path.splitext(e.name)[1].lower() in MEDIA_EXTENSIONS and e.is_file()]
         except OSError:
             return []
         paths = [os.path.join(folder, n) for n in sorted(names, key=natural)]
