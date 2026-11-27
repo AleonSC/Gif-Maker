@@ -22,7 +22,8 @@ from .player import Player
 from .tooltip import Tooltip
 
 SIDEBAR_W = 210
-PANEL_W = 320
+PANEL_W = 320  # the right panel's starting width; drag its left edge to change it
+PANEL_MIN_W = 260
 PREVIEW_H = 180
 MAX_FPS = 30
 RECENT = 6  # recent folders remembered
@@ -159,6 +160,9 @@ class LibraryView(ttk.Frame):
         self.kind_filter = tk.StringVar(value="all")
         self.sort = tk.StringVar(value=theme.load_setting("library_sort", SORTS[0]))
         self.search = tk.StringVar()
+        self.auto_seen = tk.BooleanVar(value=bool(theme.load_setting("library_auto_seen", False)))
+        self.auto_seen.trace_add("write", lambda *_: theme.save_setting(
+            "library_auto_seen", self.auto_seen.get()))
         self.search_job = None
         self.small = font.nametofont("TkDefaultFont").copy()
         self.small.configure(size=max(7, self.small.cget("size") - 1), weight="bold")
@@ -207,10 +211,19 @@ class LibraryView(ttk.Frame):
         self.sidebar.pack(side="left", fill="y")
         self.sidebar.pack_propagate(False)
         ttk.Separator(body, orient="vertical").pack(side="left", fill="y")
-        self.panel = ttk.Frame(body, width=PANEL_W, padding=12)
+        self.body = body
+        self.panel_w = int(theme.load_setting("library_panel_w", PANEL_W) or PANEL_W)
+        self.panel = ttk.Frame(body, width=self.panel_w, padding=12)
         self.panel.pack(side="right", fill="y")
         self.panel.pack_propagate(False)
-        ttk.Separator(body, orient="vertical").pack(side="right", fill="y")
+        # A handle on the panel's left edge: drag it to make the panel (and preview) wider.
+        handle = tk.Frame(body, width=7, cursor="sb_h_double_arrow", bd=0)
+        handle.pack(side="right", fill="y")
+        ttk.Separator(handle, orient="vertical").place(relx=0.5, y=0, relheight=1)
+        handle.bind("<B1-Motion>", self._drag_panel)
+        handle.bind("<ButtonRelease-1>",
+                    lambda e: theme.save_setting("library_panel_w", self.panel_w))
+        Tooltip(handle, "Drag to resize the preview")
         main = ttk.Frame(body, padding=(12, 10, 6, 0))
         main.pack(side="left", fill="both", expand=True)
 
@@ -228,6 +241,12 @@ class LibraryView(ttk.Frame):
                             ("pictures", "Pictures")):
             ttk.Radiobutton(bar, text=text, value=value, variable=self.kind_filter,
                             style="Toolbutton").pack(side="left", padx=(0, 2))
+        ttk.Frame(bar, width=14).pack(side="left")
+        auto = ttk.Checkbutton(bar, text="Mark seen on click", variable=self.auto_seen,
+                               style="Toolbutton")
+        auto.pack(side="left")
+        Tooltip(auto, "While this is on, every file you click on (or arrow to) that has no "
+                      "mark yet is marked as seen. Files you marked unseen stay unseen.")
         size = ttk.Scale(bar, from_=80, to=320, length=90,
                          command=lambda v: self.browser._size_changed())
         size.pack(side="right")
@@ -237,7 +256,7 @@ class LibraryView(ttk.Frame):
                      width=13).pack(side="right")
         ttk.Label(bar, text="Sort").pack(side="right", padx=(0, 4))
 
-        self.browser = FileBrowser(main, self.app.ffmpeg, self.select, None,
+        self.browser = FileBrowser(main, self.app.ffmpeg, self._picked, None,
                                    on_look=self.app._quick_look, on_activate=self.open_in_editor,
                                    head=False, empty_text="No videos or pictures here")
         self.browser.pack(fill="both", expand=True)
@@ -252,21 +271,39 @@ class LibraryView(ttk.Frame):
         self._build_panel()
         self._fill_sidebar()
 
+    def _drag_panel(self, event):
+        body_w = self.body.winfo_width()
+        right = self.body.winfo_rootx() + body_w
+        widest = max(PANEL_MIN_W, body_w - SIDEBAR_W - 300)  # keep room for the files
+        self.panel_w = int(min(max(right - event.x_root, PANEL_MIN_W), widest))
+        self.panel.config(width=self.panel_w)
+        wrap = self.panel_w - 30
+        for label in (self.name_label, self.details, self.hint):
+            label.config(wraplength=wrap)
+
     def _build_panel(self):
+        # Everything under the preview is packed from the bottom up first, and the preview
+        # last, so it takes whatever room is left: bigger panel, bigger preview, and the
+        # buttons never get pushed out of sight.
         p = self.panel
-        self.preview = Preview(p, self.app)
-        self.preview.pack(fill="x")
-        self.preview.bind("<Double-Button-1>", lambda e: self.open_in_editor(self.selected))
-        self.name_label = ttk.Label(p, font=self.bold, wraplength=PANEL_W - 30, justify="left")
-        self.name_label.pack(anchor="w", fill="x", pady=(10, 0))
-        self.details = ttk.Label(p, style="Muted.TLabel", wraplength=PANEL_W - 30,
-                                 justify="left")
-        self.details.pack(anchor="w", fill="x", pady=(2, 10))
+        wrap = self.panel_w - 30
+        self.hint = ttk.Label(p, style="Muted.TLabel", wraplength=wrap, justify="left",
+                              text="Double-click to edit  ·  S / U to mark")
+        self.hint.pack(side="bottom", anchor="w", fill="x")
+        self.actions_box = tk.Frame(p, bd=0)
+        self.actions_box.pack(side="bottom", fill="x")
+        marks = ttk.Frame(p)
+        marks.pack(side="bottom", fill="x", pady=(8, 8))
         self.open_btn = ttk.Button(p, text="Open in editor  (Enter)",
                                    command=lambda: self.open_in_editor(self.selected))
-        self.open_btn.pack(fill="x", ipady=4)
-        marks = ttk.Frame(p)
-        marks.pack(fill="x", pady=(8, 8))
+        self.open_btn.pack(side="bottom", fill="x", ipady=4)
+        self.details = ttk.Label(p, style="Muted.TLabel", wraplength=wrap, justify="left")
+        self.details.pack(side="bottom", anchor="w", fill="x", pady=(2, 10))
+        self.name_label = ttk.Label(p, font=self.bold, wraplength=wrap, justify="left")
+        self.name_label.pack(side="bottom", anchor="w", fill="x", pady=(10, 0))
+        self.preview = Preview(p, self.app)
+        self.preview.pack(side="top", fill="both", expand=True)
+        self.preview.bind("<Double-Button-1>", lambda e: self.open_in_editor(self.selected))
         self.mark_btns = {}
         for state, label, key in ((seen.SEEN, "Seen", "S"), (seen.UNSEEN, "Unseen", "U")):
             b = tk.Button(marks, text=f"{label}  ({key})", relief="flat", bd=0, cursor="hand2",
@@ -274,11 +311,6 @@ class LibraryView(ttk.Frame):
             b.pack(side="left", fill="x", expand=True, padx=(0, 4) if state == seen.SEEN else 0,
                    ipady=5)
             self.mark_btns[state] = b
-        self.actions_box = tk.Frame(p, bd=0)
-        self.actions_box.pack(fill="x")
-        self.hint = ttk.Label(p, style="Muted.TLabel", wraplength=PANEL_W - 30, justify="left",
-                              text="Double-click to edit  ·  S / U to mark")
-        self.hint.pack(side="bottom", anchor="w", fill="x")
 
     # ------------------------------------------------- sidebar and actions
     def _colors(self):
@@ -506,6 +538,12 @@ class LibraryView(ttk.Frame):
         self.select(pick)
 
     # --------------------------------------------------------- selection
+    def _picked(self, path):
+        """A file was clicked (or arrowed to): select it, and mark it seen if asked to."""
+        self.select(path)
+        if self.auto_seen.get() and path and seen.get(path) is None:
+            self.app.actions.mark(path, seen.SEEN)
+
     def select(self, path):
         self.browser.show(self.paths, path)
         if path == self.selected and self.preview.path == path:
@@ -630,6 +668,7 @@ class LibraryView(ttk.Frame):
             self.reload(select=select)
         else:
             self.set_folder(folder, select=select)
+        self.browser.redraw_all()  # marks changed in the editor aren't drawn while hidden
         self.preview.path = None  # start it again
         self.select(self.selected)
         self.browser.canvas.focus_set()
