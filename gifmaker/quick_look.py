@@ -8,15 +8,12 @@ else.
 """
 
 import os
-import shutil
-import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import filedialog, font, messagebox, ttk
+from tkinter import font, ttk
 
 from . import ffmpeg_tools as ff
-from . import files
 from . import seen
 from . import sort_keys
 from . import theme
@@ -32,11 +29,6 @@ def _human_size(n):
         if n < 1024 or unit == "GB":
             return f"{n:.0f} {unit}" if unit == "bytes" else f"{n:.1f} {unit}"
         n /= 1024
-
-
-def _same(a, b):
-    return bool(a and b) and os.path.normcase(os.path.abspath(a)) == \
-        os.path.normcase(os.path.abspath(b))
 
 
 class QuickLook(tk.Toplevel):
@@ -353,30 +345,11 @@ class QuickLook(tk.Toplevel):
         return path
 
     # ----------------------------------------------------------- actions
-    def _let_go(self, path):
-        """Stop the main window reading path. Returns its reopen(mapping) (App._release)."""
-        key = os.path.normcase(os.path.abspath(path))
-        return self.app._release(lambda p: os.path.normcase(os.path.abspath(p)) == key)
-
-    def _folder_changed(self):
-        self.app.listing = None
-        self.app._update_nav()
-        if getattr(self.app, "rename_window", None) is not None:
-            try:
-                self.app.rename_window.reload()
-            except Exception:  # noqa: BLE001 - the rename tool refreshing is a nicety
-                pass
-
+    # (done by app.actions, a FileActions, so the library does them the same way)
     def mark_as(self, state):
-        """Mark the file seen or unseen (None clears it); kept between sessions."""
         path = self.path
         self.close()
-        if not path:
-            return
-        seen.mark(path, state)
-        self.app.browser.redraw(path)
-        name = os.path.basename(path)
-        self.app.status.set(f"Marked {name} as {state}." if state else f"Cleared the mark on {name}.")
+        self.app.actions.mark(path, state)
 
     def open_in_main(self):
         path = self.path
@@ -386,120 +359,26 @@ class QuickLook(tk.Toplevel):
 
     def reveal(self):
         path = self._take()
-        if path:
-            files.reveal([path])
+        self.app.actions.reveal(path)
 
     def copy_path(self):
         path = self.path
         self.close()
-        if path:
-            self.app.root.clipboard_clear()
-            self.app.root.clipboard_append(os.path.abspath(path))
-            self.app.status.set(f"Copied the path of {os.path.basename(path)}.")
+        self.app.actions.copy_path(path)
 
     def delete(self):
         path = self._take()
-        if not path:
-            return
-        if not messagebox.askyesno("Delete file", f"Delete “{os.path.basename(path)}”?"
-                                   f"\n\n{files.where_it_goes()}", icon="warning",
-                                   parent=self.app.root):
-            return
-        if _same(path, self.app.video_path):
-            self.app.sections = []  # already confirmed
-        self._let_go(path)
-        self._delete_when_free(path, tries=15)
-
-    def _delete_when_free(self, path, tries):
-        try:
-            files.send_to_trash(path)
-        except OSError as e:
-            if tries > 0 and os.path.exists(path):
-                self.after(150, lambda: self._delete_when_free(path, tries - 1))
-                return
-            messagebox.showerror("Couldn't delete", f"{os.path.basename(path)} wasn't deleted:"
-                                 f"\n{e}", parent=self.app.root)
-            return
-        self._folder_changed()
-        recycled = " (it's in the Recycle Bin)" if sys.platform == "win32" else ""
-        self.app.status.set(f"Deleted {os.path.basename(path)}{recycled}.")
+        self.app.actions.delete(path)
 
     def move_or_copy(self, copy):
         path = self._take()
-        if not path:
-            return
-        last = theme.load_setting("quick_look_folder", "") or os.path.dirname(path)
-        folder = filedialog.askdirectory(parent=self.app.root, initialdir=last,
-                                         title=("Copy" if copy else "Move") + " to this folder")
-        if not folder:
-            return
-        theme.save_setting("quick_look_folder", folder)
-        (self._copy if copy else self._move)(path, folder)
+        if path:
+            self.app.actions.move_or_copy(path, copy)
 
     def move_to(self, folder):
         path = self._take()
         if path:
-            self._move(path, folder)
-
-    def _move(self, path, folder):
-        if not os.path.isdir(folder):
-            self.app.status.set(f"That folder isn't there any more: {folder}")
-            return
-        if _same(os.path.dirname(os.path.abspath(path)), folder):
-            self.app.status.set("It's already in that folder.")
-            return
-        is_open = _same(path, self.app.video_path)
-        if is_open and self.app.sections and not messagebox.askyesno(
-                "Move file", f"Moving it clears your {len(self.app.sections)} section(s). "
-                "Move it anyway?", parent=self.app.root):
-            return
-        if is_open:
-            self.app.sections = []
-        dst = files.free_name(folder, os.path.basename(path))
-        where = os.path.basename(os.path.normpath(folder)) or folder
-        self._let_go(path)
-        self.app.status.set(f"Moving {os.path.basename(path)}...")
-
-        def work():
-            try:
-                files.move_file(path, dst)
-                error = None
-            except OSError as e:
-                error = e
-            ui_thread.call(lambda: self._moved(path, dst, where, error))
-
-        threading.Thread(target=work, daemon=True).start()
-
-    def _moved(self, src, dst, where, error):
-        self._folder_changed()
-        if error:
-            messagebox.showerror("Couldn't move", f"{os.path.basename(src)} wasn't moved:"
-                                 f"\n{error}", parent=self.app.root)
-            return
-        self.app.last_sort = (src, dst)  # Ctrl+Z in the main window puts it back
-        self.app.status.set(f"Moved {os.path.basename(src)} to {where}  (Ctrl+Z puts it back).")
-
-    def _copy(self, path, folder):
-        dst = files.free_name(folder, os.path.basename(path))
-        self.app.status.set(f"Copying {os.path.basename(path)}...")
-
-        def work():
-            try:
-                shutil.copy2(path, dst)
-                error = None
-            except OSError as e:
-                error = e
-            ui_thread.call(lambda: self._copied(path, dst, error))
-
-        threading.Thread(target=work, daemon=True).start()
-
-    def _copied(self, src, dst, error):
-        if error:
-            messagebox.showerror("Couldn't copy", f"{os.path.basename(src)} wasn't copied:"
-                                 f"\n{error}", parent=self.app.root)
-            return
-        self._folder_changed()
-        self.app.status.set(f"Copied {os.path.basename(src)} to {os.path.dirname(dst)}.")
+            self.app.actions.move_to(path, folder)
 
     # ------------------------------------------------------------ rename
     def start_rename(self):
@@ -527,39 +406,7 @@ class QuickLook(tk.Toplevel):
         entry = self.renaming
         if entry is None:
             return
-        name = entry.get().strip().rstrip(".")
+        name = entry.get()
         path = self._take()  # closes the pop-up (and the entry)
-        if not path:
-            return
-        folder = os.path.dirname(os.path.abspath(path))
-        old = os.path.basename(path)
-        stem, ext = os.path.splitext(old)
-        if not name or name == stem:
-            return
-        if any(c in files.INVALID_NAME_CHARS or ord(c) < 32 for c in name):
-            messagebox.showerror("Can't rename", "A file name can't contain any of these: "
-                                 + " ".join(files.INVALID_NAME_CHARS), parent=self.app.root)
-            return
-        new = name + ext
-        if os.path.exists(os.path.join(folder, new)) and \
-                os.path.normcase(new) != os.path.normcase(old):
-            messagebox.showerror("Can't rename", f"“{new}” already exists in this "
-                                 "folder.", parent=self.app.root)
-            return
-        reopen = self._let_go(path)
-        self._rename_when_free(folder, old, new, reopen, tries=15)
-
-    def _rename_when_free(self, folder, old, new, reopen, tries):
-        try:
-            files.rename_all(folder, [(old, new)])
-        except OSError as e:
-            if tries > 0 and not isinstance(e, FileExistsError):
-                self.after(150, lambda: self._rename_when_free(folder, old, new, reopen,
-                                                               tries - 1))
-                return
-            reopen({})
-            messagebox.showerror("Couldn't rename", str(e), parent=self.app.root)
-            return
-        reopen({os.path.normcase(os.path.join(folder, old)): os.path.join(folder, new)})
-        self._folder_changed()
-        self.app.status.set(f"Renamed to {new}")
+        if path:
+            self.app.actions.rename(path, name)

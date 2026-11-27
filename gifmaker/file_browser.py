@@ -73,10 +73,14 @@ class FileBrowser(ttk.Frame):
     """on_open(path) is called when a thumbnail is clicked; on_close() by ✕;
     on_look(path, x, y), if given, when one is right-clicked (x, y: the mouse on screen)."""
 
-    def __init__(self, master, ffmpeg, on_open, on_close, on_look=None):
-        super().__init__(master, padding=(6, 0, 0, 0))
+    def __init__(self, master, ffmpeg, on_open, on_close, on_look=None, on_activate=None,
+                 head=True, empty_text=""):
+        super().__init__(master, padding=(6, 0, 0, 0) if head else 0)
         self.ffmpeg, self.on_open, self.on_close = ffmpeg, on_open, on_close
         self.on_look = on_look
+        self.on_activate = on_activate  # double-click (and Enter), if given
+        self.has_head = head
+        self.empty_text = empty_text
         self.size = tk.IntVar(value=int(theme.load_setting("thumb_size", 160)))
         # A plain copy for the worker threads: asking a Tk variable from another
         # thread waits for the window's thread, which may be waiting for the lock.
@@ -107,8 +111,11 @@ class FileBrowser(ttk.Frame):
 
     def _build(self):
         head = ttk.Frame(self)
-        head.pack(fill="x", pady=(0, 4))
         self.title = ttk.Label(head, style="Head.TLabel", width=1)
+        if not self.has_head:  # (the library has its own controls)
+            self._build_body()
+            return
+        head.pack(fill="x", pady=(0, 4))
         self.title.pack(side="left", fill="x", expand=True)
         close = ttk.Button(head, text="\u2715", width=3, command=self.on_close)
         close.pack(side="right")
@@ -117,7 +124,9 @@ class FileBrowser(ttk.Frame):
                          command=lambda v: self._size_changed())
         zoom.pack(side="right", padx=(6, 6))
         Tooltip(zoom, "Thumbnail size (or Ctrl + mouse wheel over them)")
+        self._build_body()
 
+    def _build_body(self):
         body = ttk.Frame(self)
         body.pack(fill="both", expand=True)
         self.canvas = tk.Canvas(body, width=BASE_W, highlightthickness=0, takefocus=0)
@@ -129,6 +138,13 @@ class FileBrowser(ttk.Frame):
         self.canvas.bind("<Configure>", lambda e: self._relayout_soon())
         self.canvas.bind("<Button-1>", self._click)
         self.canvas.bind("<Button-3>", self._right_click)
+        self.canvas.bind("<Double-Button-1>", self._double_click)
+        for key, (dx, rows) in {"Left": (-1, 0), "Right": (1, 0), "Up": (0, -1),
+                                "Down": (0, 1), "Prior": (0, -4), "Next": (0, 4)}.items():
+            self.canvas.bind(f"<{key}>", lambda e, d=dx, r=rows: self._arrow(d, r))
+        self.canvas.bind("<Home>", lambda e: self._select_index(0))
+        self.canvas.bind("<End>", lambda e: self._select_index(len(self.paths) - 1))
+        self.canvas.bind("<Return>", lambda e: self._activate(self.current))
         self.canvas.bind("<Motion>", self._hover)
         self.canvas.bind("<Leave>", lambda e: self.canvas.delete("hover"))
         for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
@@ -291,7 +307,7 @@ class FileBrowser(ttk.Frame):
         rows = (len(self.paths) + cols - 1) // cols
         c.configure(scrollregion=(0, 0, width, GAP + rows * self.grid[4]))
         if not self.paths:
-            c.create_text(width // 2, 40, text="No videos or pictures here",
+            c.create_text(width // 2, 40, text=self.empty_text or "No videos or pictures here",
                           fill=theme.colors["muted"])
         self._update_view()
 
@@ -447,9 +463,34 @@ class FileBrowser(ttk.Frame):
         return None
 
     def _click(self, event):
+        self.canvas.focus_set()  # for the arrow keys
         hit = self._cell_at(event)
         if hit and hit[0] != self.current:
             self.on_open(hit[0])
+
+    def _double_click(self, event):
+        hit = self._cell_at(event)
+        if hit:
+            self._activate(hit[0])
+
+    def _activate(self, path):
+        if path and self.on_activate:
+            self.on_activate(path)
+        return "break"
+
+    def _select_index(self, i):
+        if self.paths:
+            i = min(max(0, i), len(self.paths) - 1)
+            if self.paths[i] != self.current:
+                self.on_open(self.paths[i])
+        return "break"
+
+    def _arrow(self, dx, rows):
+        """Arrow keys: the next file across or the one above / below."""
+        i = self.index.get(self.current)
+        if i is None:
+            return self._select_index(0)
+        return self._select_index(i + dx + rows * self.grid[0])
 
     def _right_click(self, event):
         hit = self._cell_at(event)
