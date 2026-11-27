@@ -1,17 +1,19 @@
-"""Quick look: right-click a thumbnail in Files to see it big, with file actions beside it.
+"""Right-click a thumbnail in Files: a pop-up at the mouse, like Explorer's right-click
+menu, with a big preview of the file and its menu docked beside it.
 
-The picture (or the video, playing silently on a loop) fills most of the window,
-and a panel docked on its right deletes, moves, copies or renames the file, shows
-it in Explorer, and so on. ‹ › (or the arrow keys) step through the folder, so a
-folder can be gone through and tidied without leaving the window.
+The picture (or the video, playing silently on a loop) is on the left, the menu
+(open, rename, move or copy to a folder, show in folder, copy path, delete) on the
+right. Like a menu, it closes when you pick something, press Esc or click anywhere
+else.
 """
 
 import os
 import shutil
 import sys
 import threading
+import time
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, font, messagebox, ttk
 
 from . import ffmpeg_tools as ff
 from . import files
@@ -20,8 +22,8 @@ from . import theme
 from . import ui_thread
 from .player import Player
 
-PANEL_W = 220
 MAX_FPS = 30
+MIN_PREVIEW = (240, 180)  # the preview area is never smaller than this
 
 
 def _human_size(n):
@@ -31,188 +33,199 @@ def _human_size(n):
         n /= 1024
 
 
+def _same(a, b):
+    return bool(a and b) and os.path.normcase(os.path.abspath(a)) == \
+        os.path.normcase(os.path.abspath(b))
+
+
 class QuickLook(tk.Toplevel):
-    """One window, reused: show() points it at another file."""
+    """One pop-up, reused: show() points it at a file and places it at the mouse."""
 
     def __init__(self, app):
         super().__init__(app.root)
+        self.withdraw()
+        self.overrideredirect(True)  # no title bar: a pop-up, like a menu
+        try:
+            self.attributes("-topmost", True)
+        except tk.TclError:
+            pass
         self.app = app
-        self.paths = []
         self.path = None
         self.info = None
         self.token = 0  # bumped on each file: stale frame grabs are dropped
         self.photo = None
-        self.render_job = None
+        self.anchor = (0, 0)  # where the mouse was
         self.renaming = None
+        self.shown_at = 0.0
+        self.items = []  # (row frame, labels) of the menu, for hover colours
         self.player = Player(self, app.ffmpeg, self._on_frame, self._on_end)
-        self.title("Quick look")
-        theme.style_window(self)
-        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        w, h = int(sw * 0.8), int(sh * 0.8)
-        self.geometry(f"{w}x{h}+{(sw - w) // 2}+{max(0, (sh - h) // 2 - 20)}")
+        self.menu_font = font.nametofont("TkMenuFont")
+        self.bold_font = self.menu_font.copy()
+        self.bold_font.configure(weight="bold")
         self._build()
-        self.protocol("WM_DELETE_WINDOW", self.close)
         self.bind("<Escape>", lambda e: self._escape())
-        self.bind("<Left>", lambda e: self._key(e, lambda: self.step(-1)))
-        self.bind("<Right>", lambda e: self._key(e, lambda: self.step(1)))
-        self.bind("<Delete>", lambda e: self._key(e, self.delete))
-        self.bind("<F2>", lambda e: self._key(e, self.start_rename))
         self.bind("<Return>", lambda e: self._key(e, self.open_in_main))
+        self.bind("<F2>", lambda e: self._key(e, self.start_rename))
+        self.bind("<Delete>", lambda e: self._key(e, self.delete))
         self.bind("<Control-e>", lambda e: self._key(e, self.reveal))
+        self.bind("<ButtonPress>", self._press, add="+")
+        self.bind("<FocusOut>", lambda e: self.after(80, self._check_focus))
 
     # ------------------------------------------------------------ layout
     def _build(self):
-        main = ttk.Frame(self)
-        main.pack(fill="both", expand=True)
-
-        panel = ttk.Frame(main, padding=10, width=PANEL_W)
-        panel.pack(side="right", fill="y")
-        panel.pack_propagate(False)
-        self.name_label = ttk.Label(panel, style="Head.TLabel", wraplength=PANEL_W - 20,
-                                    justify="left")
-        self.name_label.pack(anchor="w", fill="x")
-        self.rename_holder = ttk.Frame(panel)
-        self.rename_holder.pack(fill="x")
-        self.details = ttk.Label(panel, style="Muted.TLabel", wraplength=PANEL_W - 20,
-                                 justify="left")
-        self.details.pack(anchor="w", fill="x", pady=(4, 10))
-
-        def button(text, command):
-            b = ttk.Button(panel, text=text, command=command)
-            b.pack(fill="x", pady=2)
-            return b
-
-        button("Open in GifMaker  (Enter)", self.open_in_main)
-        ttk.Separator(panel).pack(fill="x", pady=6)
-        button("Rename...  (F2)", self.start_rename)
-        button("Move to folder...", lambda: self.move_or_copy(copy=False))
-        button("Copy to folder...", lambda: self.move_or_copy(copy=True))
-        self.sort_frame = ttk.Frame(panel)
-        self.sort_frame.pack(fill="x")
-        button("Show in folder  (Ctrl+E)", self.reveal)
-        button("Copy file path", self.copy_path)
-        ttk.Separator(panel).pack(fill="x", pady=6)
-        button("Delete  (Del)", self.delete)
-        self.status = ttk.Label(panel, style="Muted.TLabel", wraplength=PANEL_W - 20,
-                                justify="left")
-        self.status.pack(side="bottom", anchor="w", fill="x")
-        nav = ttk.Frame(panel)
-        nav.pack(side="bottom", fill="x", pady=(10, 6))
-        self.back_btn = ttk.Button(nav, text="‹ Back", command=lambda: self.step(-1))
-        self.back_btn.pack(side="left", expand=True, fill="x", padx=(0, 2))
-        self.next_btn = ttk.Button(nav, text="Next ›", command=lambda: self.step(1))
-        self.next_btn.pack(side="left", expand=True, fill="x", padx=(2, 0))
-        self.count_label = ttk.Label(panel, style="Muted.TLabel", anchor="center")
-        self.count_label.pack(side="bottom", fill="x")
-
-        self.canvas = tk.Canvas(main, bg="#111", highlightthickness=0)
-        self.canvas.pack(side="left", fill="both", expand=True)
+        self.border = tk.Frame(self, bd=0, highlightthickness=1)
+        self.border.pack(fill="both", expand=True)
+        self.canvas = tk.Canvas(self.border, bg="#111", highlightthickness=0,
+                                width=MIN_PREVIEW[0], height=MIN_PREVIEW[1])
+        self.canvas.pack(side="left", fill="both")
         self.canvas_img = self.canvas.create_image(0, 0, anchor="center")
         self.canvas_text = self.canvas.create_text(0, 0, fill="#888", anchor="center")
-        self.canvas.bind("<Configure>", lambda e: self._render_soon())
         self.canvas.bind("<Double-Button-1>", lambda e: self.open_in_main())
+        self.menu = tk.Frame(self.border, bd=0)
+        self.menu.pack(side="left", fill="y")
 
-    def _fill_sort_buttons(self):
-        for child in self.sort_frame.winfo_children():
+    def _colors(self):
+        c = theme.colors
+        return c.get("bg", "#f0f0f0"), c.get("fg", "#000"), c.get("muted", "#666"), \
+            c.get("select", "#0078d7"), c.get("select_fg", "#fff"), c.get("border", "#999")
+
+    def _fill_menu(self):
+        bg, fg, muted, _, _, border = self._colors()
+        self.border.config(bg=bg, highlightbackground=border, highlightcolor=border)
+        self.menu.config(bg=bg)
+        for child in self.menu.winfo_children():
             child.destroy()
+        self.items = []
+        head = tk.Frame(self.menu, bg=bg, padx=12, pady=8)
+        head.pack(fill="x")
+        self.name_label = tk.Label(head, bg=bg, fg=fg, font=self.bold_font, anchor="w",
+                                   justify="left", wraplength=260)
+        self.name_label.pack(fill="x")
+        self.rename_holder = tk.Frame(head, bg=bg)
+        self.rename_holder.pack(fill="x")
+        self.details = tk.Label(head, bg=bg, fg=muted, font=self.menu_font, anchor="w",
+                                justify="left", wraplength=260)
+        self.details.pack(fill="x")
+        self._separator()
+        self._item("Open", "Enter", self.open_in_main, bold=True)
+        self._separator()
+        self._item("Rename", "F2", self.start_rename)
+        self._item("Move to folder...", "", lambda: self.move_or_copy(copy=False))
+        self._item("Copy to folder...", "", lambda: self.move_or_copy(copy=True))
         keys = getattr(self.app, "sort_keys", {}) or {}
         for key, folder in sort_keys._ordered(keys):
             name = os.path.basename(os.path.normpath(folder)) or folder
-            ttk.Button(self.sort_frame, text=f"Move to {name}  ({sort_keys.label(key)})",
-                       command=lambda f=folder: self.move_to(f)).pack(fill="x", pady=2)
+            self._item(f"Move to {name}", sort_keys.label(key),
+                       lambda f=folder: self.move_to(f))
+        self._separator()
+        self._item("Show in folder", "Ctrl+E", self.reveal)
+        self._item("Copy path", "", self.copy_path)
+        self._separator()
+        self._item("Delete", "Del", self.delete)
+        tk.Frame(self.menu, bg=bg, height=4).pack(fill="x")
+
+    def _separator(self):
+        bg, _, _, _, _, border = self._colors()
+        holder = tk.Frame(self.menu, bg=bg, padx=8, pady=3)
+        holder.pack(fill="x")
+        tk.Frame(holder, bg=border, height=1).pack(fill="x")
+
+    def _item(self, text, shortcut, command, bold=False):
+        bg, fg, muted, sel, sel_fg, _ = self._colors()
+        row = tk.Frame(self.menu, bg=bg, padx=12, pady=4, cursor="hand2")
+        row.pack(fill="x", padx=3)
+        name = tk.Label(row, text=text, bg=bg, fg=fg, anchor="w",
+                        font=self.bold_font if bold else self.menu_font)
+        name.pack(side="left")
+        key = tk.Label(row, text=shortcut, bg=bg, fg=muted, anchor="e", font=self.menu_font)
+        key.pack(side="right", padx=(30, 0))
+        widgets = (row, name, key)
+
+        def hover(on):
+            for w in widgets:
+                w.config(bg=sel if on else bg)
+            name.config(fg=sel_fg if on else fg)
+            key.config(fg=sel_fg if on else muted)
+
+        for w in widgets:
+            w.bind("<Enter>", lambda e: hover(True))
+            w.bind("<Leave>", lambda e: hover(False))
+            w.bind("<ButtonRelease-1>", lambda e: command())
+        self.items.append(widgets)
 
     # ----------------------------------------------------------- showing
-    def show(self, path, paths):
-        """Show path; paths is the folder's list, for ‹ ›."""
-        self.paths = list(paths) if path in paths else [path]
-        self._fill_sort_buttons()
-        self._load(path)
-        self.deiconify()
-        self.lift()
-        self.focus_force()
-
-    def _load(self, path):
+    def show(self, path, x, y):
+        """Pop up for path with its corner at the mouse (x, y on the screen)."""
         self._cancel_rename()
         self.player.stop()
         self.token += 1
+        self.shown_at = time.monotonic()
         self.path = path
         self.info = None
         self.photo = None
+        self.anchor = (x, y)
+        self._fill_menu()
+        self._update_labels()
+        self._size_preview(*MIN_PREVIEW)
         self.canvas.itemconfig(self.canvas_img, image="")
         self.canvas.itemconfig(self.canvas_text, text="Loading...")
-        self.status.config(text="")
-        self._update_labels()
+        self.deiconify()
+        self._place()
+        self.lift()
+        self.focus_force()
+        try:
+            self.grab_set()  # clicks elsewhere in GifMaker come here, to close it
+        except tk.TclError:
+            pass
         token = self.token
 
         def work():
             try:
                 info = ff.probe(self.app.ffmpeg, path)
-            except Exception as e:  # noqa: BLE001 - any failure: say so in the window
+            except Exception as e:  # noqa: BLE001 - any failure: say so in the pop-up
                 info = e
             ui_thread.call(lambda: self._probed(token, info))
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _max_preview(self):
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        return int(min(800, sw * 0.5)), int(min(600, sh * 0.6))
+
+    def _size_preview(self, w, h):
+        self.canvas.config(width=w, height=h)
+        self.canvas.coords(self.canvas_img, w // 2, h // 2)
+        self.canvas.coords(self.canvas_text, w // 2, h // 2)
+        self.canvas.itemconfig(self.canvas_text, width=max(100, w - 20))
+
+    def _place(self):
+        """Put it at the mouse, flipped left or up where it would go off the screen."""
+        self.update_idletasks()
+        w, h = self.winfo_reqwidth(), self.winfo_reqheight()
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        x, y = self.anchor
+        if x + w > sw:
+            x = max(0, x - w)
+        if y + h > sh:
+            y = max(0, sh - h)
+        self.geometry(f"+{x}+{y}")
+
     def _probed(self, token, info):
         if token != self.token or not self.winfo_exists():
             return
         if isinstance(info, Exception):
-            self.canvas.itemconfig(self.canvas_text, text=f"Can't show this file.\n\n{info}"[:400])
+            self.canvas.itemconfig(self.canvas_text, text=f"Can't show this file.\n\n{info}"[:300])
             return
         self.info = info
         self._update_labels()
-        self._render()
-
-    def _update_labels(self):
-        path = self.path
-        self.title(f"{os.path.basename(path)} - Quick look" if path else "Quick look")
-        self.name_label.config(text=os.path.basename(path) if path else "")
-        lines = []
-        try:
-            st = os.stat(path)
-            lines.append(_human_size(st.st_size))
-        except (OSError, TypeError):
-            pass
-        info = self.info
-        if info:
-            if info.width:
-                lines.append(f"{info.width} × {info.height} px")
-            if info.duration and not ff.is_image(path):
-                lines.append(ff.format_time(info.duration).split(".")[0])
-        if path:
-            lines.append(os.path.dirname(path))
-        self.details.config(text="\n".join(lines))
-        i = self._index()
-        n = len(self.paths)
-        self.count_label.config(text=f"{i + 1} of {n}" if i is not None and n > 1 else "")
-        self.back_btn.config(state="normal" if i else "disabled")
-        self.next_btn.config(state="normal" if i is not None and i + 1 < n else "disabled")
-
-    def _view_size(self):
-        return max(2, self.canvas.winfo_width()), max(2, self.canvas.winfo_height())
-
-    def _render_soon(self):
-        cw, ch = self._view_size()
-        self.canvas.coords(self.canvas_img, cw // 2, ch // 2)
-        self.canvas.coords(self.canvas_text, cw // 2, ch // 2)
-        self.canvas.itemconfig(self.canvas_text, width=max(100, cw - 40))
-        if self.render_job:
-            self.after_cancel(self.render_job)
-        self.render_job = self.after(150, self._render)
-
-    def _render(self):
-        self.render_job = None
-        info, path = self.info, self.path
-        if not info or not path:
-            return
-        cw, ch = self._view_size()
-        w, h = ff.fit_size(info.width, info.height, cw, ch, upscale=False)
-        if info.duration > 0 and not ff.is_image(path):
-            fps = min(info.fps or 25.0, MAX_FPS)
+        w, h = ff.fit_size(info.width, info.height, *self._max_preview(), upscale=False)
+        self._size_preview(max(w, MIN_PREVIEW[0]), max(h, MIN_PREVIEW[1]))
+        self._place()
+        if info.duration > 0 and not ff.is_image(self.path):
             self.player.muted = True
-            self.player.start(path, 0.0, (w, h), fps)
+            self.player.start(self.path, 0.0, (w, h), min(info.fps or 25.0, MAX_FPS))
             return
-        token = self.token
+        path = self.path
 
         def work():
             data = ff.grab_frame(self.app.ffmpeg, path, 0.0, w, h)
@@ -220,15 +233,29 @@ class QuickLook(tk.Toplevel):
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _update_labels(self):
+        path = self.path
+        self.name_label.config(text=os.path.basename(path) if path else "")
+        parts = []
+        try:
+            parts.append(_human_size(os.stat(path).st_size))
+        except (OSError, TypeError):
+            pass
+        info = self.info
+        if info:
+            if info.width:
+                parts.append(f"{info.width} × {info.height}")
+            if info.duration and not ff.is_image(path):
+                parts.append(ff.format_time(info.duration).split(".")[0])
+        self.details.config(text="   ".join(parts))
+
     def _show_still(self, token, data):
         if token != self.token or not self.winfo_exists():
             return
         if not data:
             self.canvas.itemconfig(self.canvas_text, text="Can't show this file.")
             return
-        self.photo = tk.PhotoImage(master=self, data=data, format="ppm")
-        self.canvas.itemconfig(self.canvas_img, image=self.photo)
-        self.canvas.itemconfig(self.canvas_text, text="")
+        self._on_frame(0, data)
 
     def _on_frame(self, _t, data):
         self.photo = tk.PhotoImage(master=self, data=data, format="ppm")
@@ -236,37 +263,37 @@ class QuickLook(tk.Toplevel):
         self.canvas.itemconfig(self.canvas_text, text="")
 
     def _on_end(self):
-        if self.path and self.winfo_exists():
-            self.after(10, self._render)  # loop
+        if self.path and self.info:
+            token = self.token
+            self.after(10, lambda: token == self.token and self._probed(token, self.info))
 
-    # -------------------------------------------------------- navigation
-    def _index(self):
-        try:
-            return self.paths.index(self.path)
-        except ValueError:
-            return None
-
-    def step(self, step):
-        i = self._index()
-        if i is None:
-            return
-        j = i + step
-        if 0 <= j < len(self.paths):
-            self._load(self.paths[j])
-
-    def _gone(self, new=None):
-        """The current file was moved away or deleted: show the next one (or close)."""
-        i = self._index()
-        if new is not None and i is not None:
-            self.paths[i] = new
-            self._load(new)
-            return
-        if i is not None:
-            self.paths.pop(i)
-        if not self.paths:
+    # ----------------------------------------------------- closing it
+    def _press(self, event):
+        """A click outside the pop-up (it has the grab, so they all come here) closes it."""
+        x, y = event.x_root, event.y_root
+        left, top = self.winfo_rootx(), self.winfo_rooty()
+        if not (left <= x < left + self.winfo_width() and top <= y < top + self.winfo_height()):
             self.close()
+            return "break"
+        return None
+
+    def _check_focus(self):
+        # Focus can blink away for a moment when the menu is rebuilt or the rename box
+        # goes: only close if it has really gone to another window or app.
+        if self.path is None or time.monotonic() - self.shown_at < 0.5:
             return
-        self._load(self.paths[min(i or 0, len(self.paths) - 1)])
+        try:
+            under = self.winfo_containing(*self.winfo_pointerxy())
+        except (KeyError, tk.TclError):
+            under = None
+        if under is not None and str(under).startswith(str(self)):
+            return
+        try:
+            focus = self.focus_get()
+        except (KeyError, tk.TclError):
+            focus = None
+        if focus is None or not str(focus).startswith(str(self)):
+            self.close()  # another window or app was clicked
 
     def _key(self, event, action):
         if isinstance(event.widget, (tk.Entry, ttk.Entry)):
@@ -280,23 +307,36 @@ class QuickLook(tk.Toplevel):
         else:
             self.close()
 
-    # ----------------------------------------------------------- actions
-    def _can_change(self):
-        if not self.path:
-            return False
-        if self.app.busy:
-            self.status.config(text="Wait for the save to finish (or cancel it) first.")
-            return False
-        if not os.path.exists(self.path):
-            self.status.config(text="It isn't there any more.")
-            return False
-        return True
-
-    def _let_go(self, path):
-        """Stop everything reading path (here and in the main window). Returns the
-        main window's reopen(mapping) (see App._release)."""
+    def close(self):
+        self._cancel_rename()
         self.player.stop()
         self.token += 1
+        self.path = None
+        self.photo = None
+        self.canvas.itemconfig(self.canvas_img, image="")
+        try:
+            self.grab_release()
+        except tk.TclError:
+            pass
+        self.withdraw()  # kept for next time: opens instantly
+
+    def _take(self):
+        """Close the pop-up and return the file it was for (None if it's gone)."""
+        path = self.path
+        self.close()
+        if not path:
+            return None
+        if self.app.busy:
+            self.app.status.set("Wait for the save to finish (or cancel it) first.")
+            return None
+        if not os.path.exists(path):
+            self.app.status.set(f"{os.path.basename(path)} isn't there any more.")
+            return None
+        return path
+
+    # ----------------------------------------------------------- actions
+    def _let_go(self, path):
+        """Stop the main window reading path. Returns its reopen(mapping) (App._release)."""
         key = os.path.normcase(os.path.abspath(path))
         return self.app._release(lambda p: os.path.normcase(os.path.abspath(p)) == key)
 
@@ -310,31 +350,33 @@ class QuickLook(tk.Toplevel):
                 pass
 
     def open_in_main(self):
-        if not self.path:
-            return
         path = self.path
         self.close()
-        self.app._browser_open(path)
+        if path:
+            self.app._browser_open(path)
 
     def reveal(self):
-        if self.path and os.path.exists(self.path):
-            files.reveal([self.path])
+        path = self._take()
+        if path:
+            files.reveal([path])
 
     def copy_path(self):
-        if self.path:
-            self.clipboard_clear()
-            self.clipboard_append(os.path.abspath(self.path))
-            self.status.config(text="Path copied.")
+        path = self.path
+        self.close()
+        if path:
+            self.app.root.clipboard_clear()
+            self.app.root.clipboard_append(os.path.abspath(path))
+            self.app.status.set(f"Copied the path of {os.path.basename(path)}.")
 
     def delete(self):
-        if not self._can_change():
+        path = self._take()
+        if not path:
             return
-        path = self.path
         if not messagebox.askyesno("Delete file", f"Delete “{os.path.basename(path)}”?"
-                                   f"\n\n{files.where_it_goes()}", icon="warning", parent=self):
+                                   f"\n\n{files.where_it_goes()}", icon="warning",
+                                   parent=self.app.root):
             return
-        if os.path.normcase(os.path.abspath(path)) == \
-                os.path.normcase(os.path.abspath(self.app.video_path or "")):
+        if _same(path, self.app.video_path):
             self.app.sections = []  # already confirmed
         self._let_go(path)
         self._delete_when_free(path, tries=15)
@@ -347,54 +389,47 @@ class QuickLook(tk.Toplevel):
                 self.after(150, lambda: self._delete_when_free(path, tries - 1))
                 return
             messagebox.showerror("Couldn't delete", f"{os.path.basename(path)} wasn't deleted:"
-                                 f"\n{e}", parent=self)
-            self._load(path)
+                                 f"\n{e}", parent=self.app.root)
             return
         self._folder_changed()
         recycled = " (it's in the Recycle Bin)" if sys.platform == "win32" else ""
         self.app.status.set(f"Deleted {os.path.basename(path)}{recycled}.")
-        if self.path == path:
-            self._gone()
-        self.status.config(text=f"Deleted {os.path.basename(path)}{recycled}.")
 
     def move_or_copy(self, copy):
-        if not self._can_change():
+        path = self._take()
+        if not path:
             return
-        last = theme.load_setting("quick_look_folder", "") or os.path.dirname(self.path)
-        folder = filedialog.askdirectory(parent=self, initialdir=last,
+        last = theme.load_setting("quick_look_folder", "") or os.path.dirname(path)
+        folder = filedialog.askdirectory(parent=self.app.root, initialdir=last,
                                          title=("Copy" if copy else "Move") + " to this folder")
         if not folder:
             return
         theme.save_setting("quick_look_folder", folder)
-        if copy:
-            self.copy_to(folder)
-        else:
-            self.move_to(folder)
+        (self._copy if copy else self._move)(path, folder)
 
     def move_to(self, folder):
-        if not self._can_change():
-            return
-        path = self.path
+        path = self._take()
+        if path:
+            self._move(path, folder)
+
+    def _move(self, path, folder):
         if not os.path.isdir(folder):
-            self.status.config(text=f"That folder isn't there any more: {folder}")
+            self.app.status.set(f"That folder isn't there any more: {folder}")
             return
-        if os.path.normcase(os.path.dirname(os.path.abspath(path))) == \
-                os.path.normcase(os.path.abspath(folder)):
-            self.status.config(text="It's already in that folder.")
+        if _same(os.path.dirname(os.path.abspath(path)), folder):
+            self.app.status.set("It's already in that folder.")
             return
-        dst = files.free_name(folder, os.path.basename(path))
-        is_open = os.path.normcase(os.path.abspath(path)) == \
-            os.path.normcase(os.path.abspath(self.app.video_path or ""))
+        is_open = _same(path, self.app.video_path)
         if is_open and self.app.sections and not messagebox.askyesno(
-                "Move file", f"Moving it clears your {len(self.app.sections)} section(s) "
-                "in the main window. Move it anyway?", parent=self):
+                "Move file", f"Moving it clears your {len(self.app.sections)} section(s). "
+                "Move it anyway?", parent=self.app.root):
             return
         if is_open:
             self.app.sections = []
-        self._let_go(path)
-        self._gone()  # on to the next one while it moves
-        self.status.config(text=f"Moving {os.path.basename(path)}...")
+        dst = files.free_name(folder, os.path.basename(path))
         where = os.path.basename(os.path.normpath(folder)) or folder
+        self._let_go(path)
+        self.app.status.set(f"Moving {os.path.basename(path)}...")
 
         def work():
             try:
@@ -410,18 +445,14 @@ class QuickLook(tk.Toplevel):
         self._folder_changed()
         if error:
             messagebox.showerror("Couldn't move", f"{os.path.basename(src)} wasn't moved:"
-                                 f"\n{error}", parent=self if self.winfo_exists() else None)
+                                 f"\n{error}", parent=self.app.root)
             return
         self.app.last_sort = (src, dst)  # Ctrl+Z in the main window puts it back
-        text = f"Moved {os.path.basename(src)} to {where}."
-        self.app.status.set(text + "  (Ctrl+Z puts it back)")
-        if self.winfo_exists():
-            self.status.config(text=text)
+        self.app.status.set(f"Moved {os.path.basename(src)} to {where}  (Ctrl+Z puts it back).")
 
-    def copy_to(self, folder):
-        path = self.path
+    def _copy(self, path, folder):
         dst = files.free_name(folder, os.path.basename(path))
-        self.status.config(text=f"Copying {os.path.basename(path)}...")
+        self.app.status.set(f"Copying {os.path.basename(path)}...")
 
         def work():
             try:
@@ -434,24 +465,24 @@ class QuickLook(tk.Toplevel):
         threading.Thread(target=work, daemon=True).start()
 
     def _copied(self, src, dst, error):
-        if not self.winfo_exists():
-            return
         if error:
             messagebox.showerror("Couldn't copy", f"{os.path.basename(src)} wasn't copied:"
-                                 f"\n{error}", parent=self)
+                                 f"\n{error}", parent=self.app.root)
             return
-        self.status.config(text=f"Copied to {os.path.dirname(dst)}.")
         self._folder_changed()
+        self.app.status.set(f"Copied {os.path.basename(src)} to {os.path.dirname(dst)}.")
 
     # ------------------------------------------------------------ rename
     def start_rename(self):
-        if not self._can_change() or self.renaming is not None:
+        """Edit the name in place, at the top of the menu; Enter renames."""
+        if not self.path or self.renaming is not None:
             return
         stem = os.path.splitext(os.path.basename(self.path))[0]
-        entry = self.renaming = ttk.Entry(self.rename_holder)
+        entry = self.renaming = ttk.Entry(self.rename_holder, width=30)
         entry.insert(0, stem)
         entry.select_range(0, "end")
-        entry.pack(fill="x", pady=(4, 0))
+        self.name_label.pack_forget()
+        entry.pack(fill="x", pady=(0, 2))
         entry.focus_set()
         entry.bind("<Return>", lambda e: self._finish_rename() or "break")
         entry.bind("<Escape>", lambda e: self._cancel_rename() or "break")
@@ -460,6 +491,7 @@ class QuickLook(tk.Toplevel):
         entry, self.renaming = self.renaming, None
         if entry is not None:
             entry.destroy()
+            self.name_label.pack(fill="x", before=self.rename_holder)
             self.focus_set()
 
     def _finish_rename(self):
@@ -467,10 +499,9 @@ class QuickLook(tk.Toplevel):
         if entry is None:
             return
         name = entry.get().strip().rstrip(".")
-        self._cancel_rename()
-        if not self._can_change():
+        path = self._take()  # closes the pop-up (and the entry)
+        if not path:
             return
-        path = self.path
         folder = os.path.dirname(os.path.abspath(path))
         old = os.path.basename(path)
         stem, ext = os.path.splitext(old)
@@ -478,13 +509,13 @@ class QuickLook(tk.Toplevel):
             return
         if any(c in files.INVALID_NAME_CHARS or ord(c) < 32 for c in name):
             messagebox.showerror("Can't rename", "A file name can't contain any of these: "
-                                 + " ".join(files.INVALID_NAME_CHARS), parent=self)
+                                 + " ".join(files.INVALID_NAME_CHARS), parent=self.app.root)
             return
         new = name + ext
         if os.path.exists(os.path.join(folder, new)) and \
                 os.path.normcase(new) != os.path.normcase(old):
             messagebox.showerror("Can't rename", f"“{new}” already exists in this "
-                                 "folder.", parent=self)
+                                 "folder.", parent=self.app.root)
             return
         reopen = self._let_go(path)
         self._rename_when_free(folder, old, new, reopen, tries=15)
@@ -498,24 +529,8 @@ class QuickLook(tk.Toplevel):
                                                                tries - 1))
                 return
             reopen({})
-            messagebox.showerror("Couldn't rename", str(e), parent=self)
-            self._load(os.path.join(folder, old))
+            messagebox.showerror("Couldn't rename", str(e), parent=self.app.root)
             return
-        old_path, new_path = os.path.join(folder, old), os.path.join(folder, new)
-        reopen({os.path.normcase(old_path): new_path})
+        reopen({os.path.normcase(os.path.join(folder, old)): os.path.join(folder, new)})
         self._folder_changed()
         self.app.status.set(f"Renamed to {new}")
-        if self.path and os.path.normcase(os.path.abspath(self.path)) == \
-                os.path.normcase(old_path):
-            self._gone(new=new_path)
-        self.status.config(text=f"Renamed to {new}")
-
-    # ------------------------------------------------------------- close
-    def close(self):
-        self._cancel_rename()
-        self.player.stop()
-        self.token += 1
-        self.path = None
-        self.photo = None
-        self.canvas.itemconfig(self.canvas_img, image="")
-        self.withdraw()  # kept for next time: opens instantly

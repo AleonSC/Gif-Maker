@@ -70,7 +70,7 @@ def _ratio(scale):
 
 class FileBrowser(ttk.Frame):
     """on_open(path) is called when a thumbnail is clicked; on_close() by ✕;
-    on_look(path), if given, when one is right-clicked."""
+    on_look(path, x, y), if given, when one is right-clicked (x, y: the mouse on screen)."""
 
     def __init__(self, master, ffmpeg, on_open, on_close, on_look=None):
         super().__init__(master, padding=(6, 0, 0, 0))
@@ -436,7 +436,7 @@ class FileBrowser(ttk.Frame):
     def _right_click(self, event):
         hit = self._cell_at(event)
         if hit and self.on_look:
-            self.on_look(hit[0])
+            self.on_look(hit[0], event.x_root, event.y_root)
 
     def _hover(self, event):
         hit = self._cell_at(event)
