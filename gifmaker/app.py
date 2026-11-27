@@ -36,6 +36,7 @@ from . import hotkey
 from .screen_recorder import RecorderWindow, cursor_monitor, default_folder, take_screenshot
 from .sequence_editor import SequenceEditor
 from .player import Player
+from .quick_look import QuickLook
 from .timeline import Timeline
 from .tooltip import Tooltip
 from .version import __version__
@@ -574,7 +575,8 @@ class GifMakerApp:
         view = ttk.Frame(self.split)
         self.split.add(view, weight=1)
         self.browser = FileBrowser(self.split, self.ffmpeg, self._browser_open,
-                                   lambda: self.toggle_files(False))
+                                   lambda: self.toggle_files(False), self._quick_look)
+        self.quick_look = None
         self.files_shown = False
         self.back_btn = ttk.Button(view, text="‹", width=2, style="Nav.TButton",
                                    command=lambda: self.open_neighbour(-1))
@@ -1242,6 +1244,12 @@ class GifMakerApp:
             self.status.set("Wait for the save to finish (or cancel it) first.")
             return
         self.open_video(path)
+
+    def _quick_look(self, path):
+        """Right-click in Files: the file big, with delete / move / rename beside it."""
+        if self.quick_look is None or not self.quick_look.winfo_exists():
+            self.quick_look = QuickLook(self)
+        self.quick_look.show(path, self.browser.paths)
 
     # -------------------------------------------------------- fullscreen
     def toggle_fullscreen(self, _event=None):
