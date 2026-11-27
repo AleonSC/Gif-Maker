@@ -111,24 +111,14 @@ class ExportDialog(tk.Toplevel):
 
     # ---------------------------------------------------------------- UI
     def _build(self):
+        """The preview on the left; on the right, the settings in sections (what to
+        save, the animation's options, crop and turn), then the size and Save."""
         main = ttk.Frame(self, padding=10)
         main.pack(fill="both", expand=True)
 
-        tools = ttk.Frame(main)
-        tools.pack(fill="x", pady=(0, 6))
-        ttk.Button(tools, text="⟲ Rotate left", command=lambda: self._rotate(-90)).pack(side="left")
-        ttk.Button(tools, text="⟳ Rotate right", command=lambda: self._rotate(90)).pack(side="left", padx=4)
-        ttk.Button(tools, text="⇆ Flip", command=self._toggle_flip).pack(side="left")
-        ttk.Label(tools, text="Crop shape").pack(side="left", padx=(16, 4))
-        aspect = ttk.Combobox(tools, textvariable=self.aspect, values=list(ASPECTS),
-                              width=9, state="readonly")
-        aspect.pack(side="left")
-        aspect.bind("<<ComboboxSelected>>", lambda e: self._apply_aspect())
-        ttk.Button(tools, text="Reset", command=self._reset).pack(side="left", padx=4)
-        if self.mode == "gif":
-            self._build_options(main)
-
-        self.canvas = tk.Canvas(main, width=VIEW_W, height=VIEW_H, bg="#111",
+        left = ttk.Frame(main)
+        left.pack(side="left", fill="y")
+        self.canvas = tk.Canvas(left, width=VIEW_W, height=VIEW_H, bg="#111",
                                 highlightthickness=0, cursor="crosshair")
         self.canvas.pack()
         self.image_item = self.canvas.create_image(0, 0, anchor="nw", image=self.photo)
@@ -137,66 +127,91 @@ class ExportDialog(tk.Toplevel):
         self.canvas.bind("<ButtonRelease-1>", self._release)
         self.loupe = Loupe(self)
         self.canvas.bind("<Motion>", self._hover)
-
-        self.hint = ttk.Label(main, style="Muted.TLabel")
+        self.hint = ttk.Label(left, style="Muted.TLabel")
         self.hint.pack(anchor="w", pady=(6, 0))
+
+        side = ttk.Frame(main)
+        side.pack(side="left", fill="y", padx=(14, 0))
+        ttk.Frame(side, width=270).pack()  # (keeps the column this wide at least)
+
         if len(self.choices) > 1:
-            pick = ttk.Frame(main)
-            pick.pack(anchor="w", pady=(6, 0))
-            ttk.Label(pick, text="Save:").pack(side="left")
+            pick = ttk.LabelFrame(side, text="Save", padding=(10, 6))
+            pick.pack(fill="x", pady=(0, 10))
             for i, (label, _, _) in enumerate(self.choices):
                 ttk.Radiobutton(pick, text=label, value=i, variable=self.choice,
-                                command=self._choice_changed).pack(side="left", padx=(8, 0))
-        bottom = ttk.Frame(main)
-        bottom.pack(fill="x", pady=(6, 0))
-        self.info = ttk.Label(bottom)
-        self.info.pack(side="left")
-        ttk.Button(bottom, text="Cancel", command=self.close).pack(side="right")
-        self.save_btn = ttk.Button(bottom, command=self._save)
-        self.save_btn.pack(side="right", padx=6)
+                                command=self._choice_changed).pack(anchor="w", pady=1)
+        if self.mode == "gif":
+            self._build_options(side)
+
+        turn = ttk.LabelFrame(side, text="Crop & turn", padding=(10, 6))
+        turn.pack(fill="x", pady=(0, 10))
+        row = ttk.Frame(turn)
+        row.pack(fill="x")
+        for text, command in (("⟲ Left", lambda: self._rotate(-90)),
+                              ("⟳ Right", lambda: self._rotate(90)),
+                              ("⇆ Flip", self._toggle_flip)):
+            ttk.Button(row, text=text, command=command, width=8).pack(side="left", padx=(0, 4))
+        row = ttk.Frame(turn)
+        row.pack(fill="x", pady=(6, 0))
+        ttk.Label(row, text="Crop shape").pack(side="left", padx=(0, 6))
+        aspect = ttk.Combobox(row, textvariable=self.aspect, values=list(ASPECTS),
+                              width=9, state="readonly")
+        aspect.pack(side="left")
+        aspect.bind("<<ComboboxSelected>>", lambda e: self._apply_aspect())
+        ttk.Button(row, text="Reset", command=self._reset).pack(side="right")
+
+        # The footer: what it will make, then the buttons.
+        foot = ttk.Frame(side)
+        foot.pack(side="bottom", fill="x")
+        self.info = ttk.Label(foot, wraplength=280, justify="left")
+        self.info.pack(anchor="w", fill="x", pady=(0, 8))
+        if self.mode == "gif":
+            self.result_btn = ttk.Button(foot, text="Preview result",
+                                         command=self._toggle_result)
+            self.result_btn.pack(fill="x", pady=(0, 4))
+            Tooltip(self.result_btn, "Make the real file and play it, with its exact colours "
+                                     "and file size (saving then just keeps it)")
+        self.save_btn = ttk.Button(foot, command=self._save)
+        self.save_btn.pack(fill="x", ipady=3)
         if self.replace:
-            replace = ttk.Button(bottom, text="Replace original",
+            replace = ttk.Button(foot, text="Replace original",
                                  command=lambda: self._save(replace=True))
-            replace.pack(side="right")
+            replace.pack(fill="x", pady=(4, 0))
             Tooltip(replace, "Save the rotated / cropped picture over the original file "
                              "(the original goes to the Recycle Bin)")
+        ttk.Button(foot, text="Cancel", command=self.close).pack(fill="x", pady=(4, 0))
         self._update_labels()
 
-    def _build_options(self, main):
-        """The animation options, two rows of them; the preview follows every change."""
-        rows = []
-        for _ in range(2):
-            row = ttk.Frame(main)
-            row.pack(fill="x", pady=(0, 6))
-            rows.append(row)
+    def _build_options(self, parent):
+        """The animation's options, label beside box; the preview follows every change."""
+        box = ttk.LabelFrame(parent, text="Animation", padding=(10, 6))
+        box.pack(fill="x", pady=(0, 10))
+        box.columnconfigure(1, weight=1)
         v = self.vars
         fields = (
-            (0, "Format", "fmt", self.formats, 13, True,
+            ("Format", "fmt", self.formats, True,
              "GIF works everywhere; WebP and animated PNG keep full colour and are often smaller"),
-            (0, "Direction", "direction", ff.DIRECTIONS, 10, True,
-             "Boomerang plays forward then back, so it loops smoothly"),
-            (0, "Speed", "speed", (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0), 5, False,
-             "2 plays twice as fast (and is half as long)"),
-            (1, "FPS", "fps", (5, 8, 10, 12, 15, 20, 24, 25, 30, 50), 4, False,
-             "Frames per second: more is smoother, fewer makes a smaller file"),
-            (1, "Width", "width", (0, 240, 320, 480, 640, 800, 1080), 5, False,
+            ("Width", "width", (0, 240, 320, 480, 640, 800, 1080), False,
              "Width in pixels (0 keeps the full size)"),
-            (1, "Colours", "colors", (256, 128, 64, 32, 16), 4, False,
+            ("Frame rate", "fps", (5, 8, 10, 12, 15, 20, 24, 25, 30, 50), False,
+             "Frames per second: more is smoother, fewer makes a smaller file"),
+            ("Speed", "speed", (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0), False,
+             "2 plays twice as fast (and is half as long)"),
+            ("Direction", "direction", ff.DIRECTIONS, True,
+             "Boomerang plays forward then back, so it loops smoothly"),
+            ("Colours", "colors", (256, 128, 64, 32, 16), False,
              "Colours in the palette (GIF only): fewer makes a smaller file"),
         )
-        for r, label, name, values, width, readonly, tip in fields:
-            ttk.Label(rows[r], text=label).pack(side="left", padx=(0, 4))
-            box = ttk.Combobox(rows[r], textvariable=v[name], values=values, width=width,
-                               state="readonly" if readonly else "normal")
-            box.pack(side="left", padx=(0, 14))
-            Tooltip(box, tip)
+        for r, (label, name, values, readonly, tip) in enumerate(fields):
+            ttk.Label(box, text=label).grid(row=r, column=0, sticky="w", padx=(0, 10), pady=2)
+            combo = ttk.Combobox(box, textvariable=v[name], values=values, width=14,
+                                 state="readonly" if readonly else "normal")
+            combo.grid(row=r, column=1, sticky="ew", pady=2)
+            Tooltip(combo, tip)
             if name == "colors":
-                self.colors_box = box
-        ttk.Checkbutton(rows[1], text="Loop forever", variable=v["loop"]).pack(side="left")
-        self.result_btn = ttk.Button(rows[0], text="Preview result", command=self._toggle_result)
-        self.result_btn.pack(side="right")
-        Tooltip(self.result_btn, "Make the real file and play it, with its exact colours "
-                                 "and file size (saving then just keeps it)")
+                self.colors_box = combo
+        ttk.Checkbutton(box, text="Loop forever", variable=v["loop"]).grid(
+            row=len(fields), column=0, columnspan=2, sticky="w", pady=(4, 0))
         for name, var in v.items():
             var.trace_add("write", lambda *_: self._options_changed())
         self.colors_box.config(state="normal" if self.fmt == "GIF" else "disabled")

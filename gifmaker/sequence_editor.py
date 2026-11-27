@@ -11,6 +11,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from . import ffmpeg_tools as ff
 from . import theme
+from . import toolbar
 from . import ui_thread
 from .player import Player
 from .timeline import Timeline
@@ -93,42 +94,41 @@ class SequenceEditor(tk.Toplevel):
 
         bar = ttk.Frame(main)
         bar.pack(fill="x")
-        add = ttk.Button(bar, text="Add...", command=self.add_files)
-        add.pack(side="left")
+        g = toolbar.group(bar, "Add")
+        add = toolbar.add(g, ttk.Button(g, text="Add...", command=self.add_files))
         Tooltip(add, "Add videos or pictures to the end of the timeline (or drag them in "
                      "from Explorer)")
-        current = ttk.Button(bar, text="Add open video", command=self.add_current)
-        current.pack(side="left", padx=(4, 0))
+        current = toolbar.add(g, ttk.Button(g, text="Add open video", command=self.add_current))
         Tooltip(current, "Add the video open in the main window, trimmed to its markers "
                          "(or one clip per section, if it has sections)")
-        self.remove_btn = ttk.Button(bar, text="Remove", command=self.remove_selected)
-        self.remove_btn.pack(side="left", padx=(12, 0))
-        Tooltip(self.remove_btn, "Take the chosen clip off the timeline  (Delete key)")
-        self.left_btn = ttk.Button(bar, text="◀", width=3, command=lambda: self.move_selected(-1))
-        self.left_btn.pack(side="left", padx=(4, 0))
+        g = toolbar.group(bar, "Chosen clip")
+        self.left_btn = toolbar.add(g, ttk.Button(g, text="◀", width=3,
+                                                  command=lambda: self.move_selected(-1)))
         Tooltip(self.left_btn, "Move the chosen clip earlier (or drag it on the timeline)")
-        self.right_btn = ttk.Button(bar, text="▶", width=3, command=lambda: self.move_selected(1))
-        self.right_btn.pack(side="left", padx=(2, 0))
+        self.right_btn = toolbar.add(g, ttk.Button(g, text="▶", width=3,
+                                                   command=lambda: self.move_selected(1)), gap=2)
         Tooltip(self.right_btn, "Move the chosen clip later")
-        self.dup_btn = ttk.Button(bar, text="Duplicate", command=self.duplicate_selected)
-        self.dup_btn.pack(side="left", padx=(4, 0))
+        self.dup_btn = toolbar.add(g, ttk.Button(g, text="Duplicate",
+                                                 command=self.duplicate_selected))
         Tooltip(self.dup_btn, "Put a copy of the chosen clip right after it (to use "
                               "another part of the same video)")
+        self.remove_btn = toolbar.add(g, ttk.Button(g, text="Remove",
+                                                    command=self.remove_selected))
+        Tooltip(self.remove_btn, "Take the chosen clip off the timeline  (Delete key)")
 
-        self.save_btn = ttk.Button(bar, text="Save video...", command=self.save)
-        self.save_btn.pack(side="right")
-        Tooltip(self.save_btn, "Join the clips, in order and trimmed, into one MP4 with sound")
-        fps = ttk.Combobox(bar, textvariable=self.fps, values=FPS_CHOICES, state="readonly",
-                           width=4)
-        fps.pack(side="right", padx=(4, 12))
-        Tooltip(fps, "Frames per second of the saved video")
-        ttk.Label(bar, text="FPS").pack(side="right")
-        size = ttk.Combobox(bar, textvariable=self.size_name, values=[n for n, _ in SIZES],
-                            state="readonly", width=24)
-        size.pack(side="right", padx=(4, 12))
+        g = toolbar.group(bar, "Save", side="right")
+        size = toolbar.add(g, ttk.Combobox(g, textvariable=self.size_name,
+                                           values=[n for n, _ in SIZES], state="readonly",
+                                           width=24))
         Tooltip(size, "Picture size of the saved video. Clips of another shape get black "
                       "bars rather than being stretched.")
-        ttk.Label(bar, text="Size").pack(side="right")
+        fps = toolbar.add(g, ttk.Combobox(g, textvariable=self.fps, values=FPS_CHOICES,
+                                          state="readonly", width=4))
+        Tooltip(fps, "Frames per second of the saved video")
+        toolbar.add(g, ttk.Label(g, text="fps"), gap=2)
+        self.save_btn = toolbar.add(g, ttk.Button(g, text="Save video...", command=self.save),
+                                    gap=10)
+        Tooltip(self.save_btn, "Join the clips, in order and trimmed, into one MP4 with sound")
 
         # The preview of the chosen clip.
         self.canvas = tk.Canvas(main, bg="#111", highlightthickness=0, width=640, height=360)

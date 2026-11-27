@@ -38,6 +38,7 @@ from .sequence_editor import SequenceEditor
 from .player import Player
 from .quick_look import QuickLook
 from .library import LibraryView
+from .settings_window import SettingsWindow
 from .file_actions import FileActions
 from .timeline import Timeline
 from .tooltip import Tooltip
@@ -133,7 +134,7 @@ class GifMakerApp:
         self.slide_loop = self._setting_var("slide_loop", True)
         self.zoom = None  # (x, y, magnification): see _region()
         self.sort_keys = sort_keys.load()  # {key: folder}
-        self.sort_window = None
+        self.settings_window = None
         self.last_sort = None  # (from, to) of the last file sorted, for Ctrl+Z
         self.zoom_job = None
         self.pan = None
@@ -383,6 +384,7 @@ class GifMakerApp:
 
     def _update_found(self, found):
         self.new_release = found
+        self.library.show_update(found)
         self.update_btn.config(text=f"Update to {found['version']}")
         self.update_btn.pack(side="right", padx=(10, 0))
         Tooltip(self.update_btn, "A newer GifMaker is out: click to install it "
@@ -521,21 +523,16 @@ class GifMakerApp:
                 ("Delete...", self.delete_file,
                  "Delete this video and open the next one in the folder  (Delete key)"),
                 ("Show in folder", self.reveal_current,
-                 "Open its folder in Explorer with it selected  (Ctrl+E)"),
-                ("Sort keys...", self.open_sort_keys,
-                 lambda: "Give folders a key: pressing it moves the file you're viewing "
-                         "there and opens the next one  (Ctrl+Z undoes)\n\n"
-                         + sort_keys.summary(self.sort_keys))):
+                 "Open its folder in Explorer with it selected  (Ctrl+E)")):
             button = ttk.Button(top, text=text, command=command)
             button.pack(side="left", padx=(0, 4))
             Tooltip(button, tip)
-        ttk.Checkbutton(top, text="Dark", variable=self.dark_mode,
-                        command=self._toggle_dark).pack(side="right")
+        settings = ttk.Button(top, text="Settings", command=self.open_settings)
+        settings.pack(side="right")
+        Tooltip(settings, lambda: "Dark mode, autoplay, slideshow, sort keys, recording, "
+                                  "downloads and updates\n\nSort keys:\n"
+                                  + sort_keys.summary(self.sort_keys))
         ttk.Separator(top, orient="vertical").pack(side="right", fill="y", padx=10, pady=3)
-        one = ttk.Checkbutton(top, text="One window", variable=self.one_window)
-        one.pack(side="right", padx=(0, 12))
-        Tooltip(one, "Videos you open from Explorer play in this window, "
-                     "instead of opening another GifMaker")
         self.slide_btn = ttk.Menubutton(top, text="Slideshow", menu=self._slideshow_menu(top))
         self.slide_btn.pack(side="right", padx=(0, 6))
         Tooltip(self.slide_btn, "Go through the folder's files by themselves  (F5 to start "
@@ -544,10 +541,6 @@ class GifMakerApp:
         self.files_btn.pack(side="right", padx=(0, 12))
         Tooltip(self.files_btn, "Show the videos in this folder as thumbnails beside the "
                                 "player  (F3)")
-        autoplay = ttk.Checkbutton(top, text="Autoplay", variable=self.autoplay)
-        autoplay.pack(side="right", padx=(0, 10))
-        Tooltip(autoplay, "Start playing each video as soon as it opens, "
-                          "e.g. when going through a folder with ‹ ›")
         # width=1: a long name is cut off rather than widening the window.
         self.file_label = ttk.Label(top, text="No video loaded", style="Muted.TLabel", width=1)
         self.file_label.pack(side="left", fill="x", expand=True, padx=(8, 8))
@@ -745,8 +738,6 @@ class GifMakerApp:
 
         # Status line; the progress bar and Cancel only show while saving.
         statusbar = ttk.Frame(main)
-        ttk.Checkbutton(statusbar, text="Show in folder after saving",
-                        variable=self.show_folder).pack(side="right", padx=(10, 0))
         self.cancel_btn = ttk.Button(statusbar, text="Cancel", command=self.cancel)
         self.progress = ttk.Progressbar(statusbar, maximum=1.0, length=160)
         self.update_btn = ttk.Button(statusbar, command=self.install_update)
@@ -1641,11 +1632,18 @@ class GifMakerApp:
 
     # -------------------------------------------------------- sort keys
     def open_sort_keys(self):
-        if self.sort_window is not None and self.sort_window.winfo_exists():
-            self.sort_window.lift()
-            self.sort_window.focus_force()
+        self.open_settings("Sort keys")
+
+    def open_settings(self, page=None):
+        """Open the Settings window (on page, if given), or bring it forward."""
+        window = self.settings_window
+        if window is not None and window.winfo_exists():
+            if page:
+                window.show(page)
+            window.lift()
+            window.focus_force()
             return
-        self.sort_window = sort_keys.SortKeysWindow(self, self._sort_keys_changed)
+        self.settings_window = SettingsWindow(self, page or "General")
 
     def _sort_keys_changed(self, keys):
         self.sort_keys = keys

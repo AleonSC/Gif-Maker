@@ -186,14 +186,17 @@ class LibraryView(ttk.Frame):
         Tooltip(search, "Find files in this folder by name")
         search.bind("<Escape>", lambda e: (self.search.set(""), self.browser.canvas.focus_set()))
         search.bind("<Return>", lambda e: self.browser.canvas.focus_set())
-        ttk.Checkbutton(head, text="Dark", variable=self.app.dark_mode,
-                        command=self.app._toggle_dark).pack(side="right")
+        settings = ttk.Button(head, text="Settings", command=self.app.open_settings)
+        settings.pack(side="right")
+        Tooltip(settings, "Dark mode, autoplay, slideshow, sort keys, recording, downloads "
+                          "and updates")
         ttk.Separator(self, orient="horizontal").pack(side="top", fill="x")
 
         status = ttk.Frame(self, padding=(12, 4))
         status.pack(side="bottom", fill="x")
         ttk.Label(status, textvariable=self.app.status, style="Muted.TLabel",
                   width=1).pack(side="left", fill="x", expand=True)
+        self.update_btn = ttk.Button(status, command=self.app.install_update)
         self.count_label = ttk.Label(status, style="Muted.TLabel")
         self.count_label.pack(side="right")
         ttk.Separator(self, orient="horizontal").pack(side="bottom", fill="x")
@@ -392,6 +395,11 @@ class LibraryView(ttk.Frame):
         self._fill_sidebar()
         self._fill_actions()
         self._paint_marks()
+
+    def show_update(self, found):
+        """A newer GifMaker is out: offer it in the status bar."""
+        self.update_btn.config(text=f"Update to {found['version']}")
+        self.update_btn.pack(side="right", padx=(10, 0), before=self.count_label)
 
     # ---------------------------------------------------------- folders
     def _recent(self):

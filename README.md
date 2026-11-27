@@ -12,6 +12,16 @@ puts it back), F2 renames and Del deletes. On the left: **Recent folders** (or d
 onto the window), **Sort into** (your sort-key folders) and **Tools**: Download link, Record
 screen, Slideshow, Grid player, Timeline edit and Rename files.
 
+**Settings** (top right in the library and the editor) holds every preference, in pages:
+General (dark mode, one window, autoplay, loop, show in folder after saving), Slideshow,
+Sort keys, Recording (frame rate, sound, mouse, folder, screenshot key), Downloads
+(quality, browser login, folder) and Updates. The Record screen and Download link windows
+just ask what to record or download, with a line saying their settings and a
+**Settings...** button to change them; Record screen can also **Take screenshot**. The
+Make GIF / Save video / Snapshot window shows the preview on the left and its options in
+sections on the right (what to save, the animation, crop & turn), with the size, Preview
+result and Save below them.
+
 1. **Open...** (Ctrl+O; mp4, mkv, mov, avi, webm, ...), drag a video from Explorer into the
    window, or drop one onto `GifMaker.exe`.
 2. Press **Play** (or the spacebar) to watch it with sound (untick **Sound** to mute; tick
@@ -40,7 +50,7 @@ screen, Slideshow, Grid player, Timeline edit and Rename files.
    real file and plays it, with its true colours and file size; saving then just keeps it.
    If you've made sections, you can save each one as its own file instead.
 
-**Open link...** (Ctrl+L) downloads a video from YouTube or most other video sites and
+**Download link** (in the library's Tools, or Ctrl+L) downloads a video from YouTube or most other video sites and
 opens it, ready to clip: paste the page's link, pick the quality and the folder, and click
 **Download and open**. You can also copy a link and press Ctrl+V in the window, or drag a
 link from the browser onto it. It uses [yt-dlp](https://github.com/yt-dlp/yt-dlp), which
@@ -111,7 +121,7 @@ the way while recording, and a small bar shows the time with **Stop and open** a
 Videos\GifMaker recordings unless you pick another folder) and opens straight away, ready
 to clip into GIFs. Hiding the bar from the video needs Windows 10 (version 2004) or later.
 
-**Screenshot key** (in the Record screen window): click it, then press a key combination
+**Screenshot key** (Settings › Recording): click it, then press a key combination
 (e.g. Ctrl+Shift+S, F9 or Print Screen). From then on that key saves a PNG of the screen the
 mouse is on, in the same folder as recordings, from anywhere, even with GifMaker minimized
 (GifMaker must still be running). Clear removes it. Windows only.
@@ -119,7 +129,7 @@ mouse is on, in the same folder as recordings, from anywhere, even with GifMaker
 **Show in folder** (Ctrl+E) opens the folder of the file you're viewing in Explorer, with
 the file selected.
 
-**Sort keys** give folders a key each: click *Sort keys...*, add a folder and press a
+**Sort keys** give folders a key each: open Settings › Sort keys, add a folder and press a
 letter, a number or a spare F key for it. Then, while viewing a file, pressing that key moves
 it into that folder and opens the next one (the Files panel updates too). A file with the
 same name already there is kept, and the moved one gets " (2)" added. Ctrl+Z puts the last
@@ -132,8 +142,8 @@ once and sharpens a moment later. It works while playing and in fullscreen.
 
 The **‹** and **›** buttons beside the video (or the ← → arrow keys, or Page Up / Page
 Down) open the previous or
-next video in the same folder; tick **Autoplay** (top right) to have each one start playing
-as soon as it opens. With **One window** ticked (the default), videos you open from
+next video in the same folder; tick autoplay (Settings › General) to have each one start playing
+as soon as it opens. With **One window** ticked (Settings › General) (the default), videos you open from
 Explorer load into the GifMaker that's already open instead of starting another. Resize the window to make the video bigger or smaller; the picture
 scales to fit. **⛶** next to the time (or F11, or double-clicking the video) shows the video
 fullscreen with the timeline and play bar underneath; Esc goes back.
@@ -150,7 +160,7 @@ and each one has its own sound switch (off to begin with).
 
 **● Record** on the grid player's toolbar records the panels area (not the toolbar) to an
 MP4, with the sound the panels play; click it again (it shows the time) to stop. It uses
-**Record screen**'s frame rate, mouse and folder settings. Keep the window where it is and
+the frame rate, mouse and folder from Settings › Recording. Keep the window where it is and
 uncovered while recording; afterwards GifMaker offers to open the video.
 
 **Timeline edit** (top right) joins parts of several videos and pictures into one video.
@@ -178,7 +188,7 @@ JPG (IMG_0042.CR2 beside IMG_0042.JPG) gets the same new number as it, so the pa
 matched (untick *RAW photos share their JPG's number* to number them separately). It shows
 the old and new names before changing anything, and **Undo last rename** puts them back.
 
-**Dark** (top right) switches the whole app to dark colours, title bars included. It's
+**Dark mode** (Settings › General) switches the whole app to dark colours, title bars included. It's
 remembered, and the first time it follows your Windows setting.
 
 Double-click the video's name at the top (or press F2) to rename its file; Enter
