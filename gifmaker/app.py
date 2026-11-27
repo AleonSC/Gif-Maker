@@ -1245,11 +1245,11 @@ class GifMakerApp:
             return
         self.open_video(path)
 
-    def _quick_look(self, path):
-        """Right-click in Files: the file big, with delete / move / rename beside it."""
+    def _quick_look(self, path, x, y):
+        """Right-click in Files: a pop-up menu with a big preview of the file."""
         if self.quick_look is None or not self.quick_look.winfo_exists():
             self.quick_look = QuickLook(self)
-        self.quick_look.show(path, self.browser.paths)
+        self.quick_look.show(path, x, y)
 
     # -------------------------------------------------------- fullscreen
     def toggle_fullscreen(self, _event=None):

@@ -64,10 +64,10 @@ or narrower. Only the thumbnails in view are drawn and made, so folders of thous
 at once and don't keep the computer busy; thumbnails are remembered, so they show at
 once next time.
 
-**Right-click** a thumbnail for a quick look: the file big (videos play silently), with
-buttons beside it to rename (F2), move or copy it to a folder (or straight to one of your
-sort-key folders), show it in Explorer, copy its path, or delete it (Del). ‹ › or the
-arrow keys step through the folder; Enter opens the file in the main window; Esc closes.
+**Right-click** a thumbnail for a pop-up menu, like Explorer's, with a big preview of the
+file beside it (videos play silently): Open, Rename (F2), Move or Copy to a folder (or
+straight to one of your sort-key folders), Show in folder, Copy path, and Delete (Del).
+Clicking anywhere else or Esc closes it.
 
 Pictures open too (JPG, PNG, BMP, WebP, TIFF, and camera RAW photos: CR2, NEF, ARW, DNG,
 RAF, ORF, RW2, PEF and others, shown from the full-size JPEG the camera keeps inside; a RAW
