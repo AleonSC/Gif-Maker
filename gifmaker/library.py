@@ -27,6 +27,8 @@ PANEL_MIN_W = 260
 PREVIEW_H = 180
 MAX_FPS = 30
 RECENT = 6  # recent folders remembered
+BROWSE_ROWS = 10  # most folders shown at once in the sidebar's Browse list
+BROWSE_ROW_H = 30
 SORTS = ("Name", "Newest first", "Oldest first", "Largest first")
 
 
@@ -210,6 +212,7 @@ class LibraryView(ttk.Frame):
         self.sidebar = tk.Frame(body, width=SIDEBAR_W, bd=0)
         self.sidebar.pack(side="left", fill="y")
         self.sidebar.pack_propagate(False)
+        self.sidebar.bind("<Configure>", lambda e: self.after_idle(self._fit_browse))
         ttk.Separator(body, orient="vertical").pack(side="left", fill="y")
         self.body = body
         self.panel_w = int(theme.load_setting("library_panel_w", PANEL_W) or PANEL_W)
@@ -370,6 +373,7 @@ class LibraryView(ttk.Frame):
             self._row(s, name, lambda f=folder: self.set_folder(f),
                       selected=_norm(folder) == current, tip=folder)
         self._row(s, "Open folder...", self.choose_folder, fg=self._colors()[2])
+        self._fill_folders(s)
         self._heading(s, "Sort into")
         keys = sort_keys._ordered(self.app.sort_keys)
         for key, folder in keys:
@@ -392,6 +396,89 @@ class LibraryView(ttk.Frame):
                 ("Rename files", lambda: self.app.open_rename_tool(self.folder),
                  "Rename everything in this folder with a numbered pattern")):
             self._row(s, text, command, tip=tip)
+
+    def _subfolders(self):
+        """The folders inside the current one, in natural order."""
+        found = []
+        try:
+            with os.scandir(self.folder) as entries:
+                for e in entries:
+                    if e.name.startswith((".", "$")) or e.name == "System Volume Information":
+                        continue
+                    try:
+                        if e.is_dir():
+                            found.append(e.name)
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+        return sorted(found, key=files.natural_key)
+
+    def _fill_folders(self, s):
+        """Browse: a way up, and the folders inside this one (click to go in)."""
+        if not self.folder or not os.path.isdir(self.folder):
+            return
+        bg, _, muted, *_ = self._colors()
+        self._heading(s, "Browse")
+        parent = os.path.dirname(os.path.normpath(self.folder))
+        if parent and _norm(parent) != _norm(self.folder):
+            name = os.path.basename(parent) or parent
+            self._row(s, f"↑  {name}", lambda: self.set_folder(parent, select=None),
+                      fg=muted, tip=f"Go up to {parent}")
+        names = self._subfolders()
+        if not names:
+            tk.Label(s, text="No folders in here", bg=bg, fg=muted, anchor="w").pack(
+                fill="x", padx=14, pady=4)
+            return
+        # A scrolling list, so a folder with hundreds of folders doesn't push the rest away.
+        rows = min(len(names), BROWSE_ROWS)
+        canvas = tk.Canvas(s, bg=bg, highlightthickness=0, height=rows * BROWSE_ROW_H)
+        self.browse_canvas, self.browse_rows = canvas, rows
+        inner = tk.Frame(canvas, bg=bg)
+        canvas.create_window(0, 0, window=inner, anchor="nw", tags="inner")
+        canvas.pack(fill="x", expand=False)
+        for name in names:
+            path = os.path.join(self.folder, name)
+            self._row(inner, "📁  " + name, lambda p=path: self.set_folder(p), tip=path)
+        s.update_idletasks()
+        canvas.config(scrollregion=(0, 0, 0, inner.winfo_reqheight()))
+        canvas.itemconfig("inner", width=max(1, SIDEBAR_W - 4))
+        s.after_idle(self._fit_browse)
+
+        def wheel(event):
+            canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+
+        canvas.configure(yscrollincrement=BROWSE_ROW_H)
+        pending = [canvas, inner]
+        while pending:  # the rows sit on top of the canvas, so each one needs the binding
+            w = pending.pop()
+            w.bind("<MouseWheel>", wheel, add="+")
+            pending.extend(w.winfo_children())
+
+    def _fit_browse(self):
+        """Give the Browse list the room the rest of the sidebar leaves (but not under
+        two rows), so the tools below it are never pushed out of sight."""
+        canvas = getattr(self, "browse_canvas", None)
+        try:
+            if canvas is None or not canvas.winfo_exists():
+                return
+            s = self.sidebar
+
+            def pad(value):
+                parts = value if isinstance(value, (tuple, list)) else (value, value)
+                return sum(int(str(x)) for x in parts)
+
+            used = 0
+            for child in s.winfo_children():
+                if child is not canvas:
+                    used += child.winfo_reqheight() + pad(child.pack_info().get("pady", 0))
+            used += pad(canvas.pack_info().get("pady", 0))
+            want = s.winfo_height() - used
+            lines = max(2, min(self.browse_rows, want // BROWSE_ROW_H))
+            if lines * BROWSE_ROW_H != int(canvas.cget("height")):
+                canvas.config(height=lines * BROWSE_ROW_H)
+        except tk.TclError:
+            pass
 
     def _fill_actions(self):
         box = self.actions_box
