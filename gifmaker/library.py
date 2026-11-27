@@ -653,6 +653,7 @@ class LibraryView(ttk.Frame):
             self.reload(select=select)
         else:
             self.set_folder(folder, select=select)
+        self.browser.redraw_all()  # marks changed in the editor aren't drawn while hidden
         self.preview.path = None  # start it again
         self.select(self.selected)
         self.browser.canvas.focus_set()

@@ -179,6 +179,13 @@ class FileBrowser(ttk.Frame):
             self._draw_cell(i)
             self._mark_current()
 
+    def redraw_all(self):
+        """Draw every visible cell again (marks may have changed while this was hidden)."""
+        for i in sorted(self.drawn):
+            self.canvas.delete(f"i{i}")
+            self._draw_cell(i)
+        self._mark_current()
+
     def refresh(self, path):
         """Make path's thumbnail again (the file has changed)."""
         if path in self.index:
