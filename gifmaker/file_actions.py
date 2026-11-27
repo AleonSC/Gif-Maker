@@ -26,6 +26,7 @@ def same(a, b):
 class FileActions:
     def __init__(self, app):
         self.app = app
+        self.mark_history = []  # (path, mark it had before), newest last, for undo_mark
 
     def _status(self, text):
         self.app.status.set(text)
@@ -47,10 +48,28 @@ class FileActions:
         """Mark path seen or unseen (None clears it); kept between sessions."""
         if not path:
             return
+        self.mark_history.append((path, seen.get(path)))
+        del self.mark_history[:-100]
         seen.mark(path, state)
         self.app.marks_changed(path)
         name = os.path.basename(path)
         self._status(f"Marked {name} as {state}." if state else f"Cleared the mark on {name}.")
+
+    def undo_mark(self):
+        """Put back the mark the last marked file had before (one step per press)."""
+        while self.mark_history:
+            path, before = self.mark_history.pop()
+            if not os.path.exists(path):
+                continue  # moved or deleted since: nothing to put back
+            seen.mark(path, before)
+            self.app.marks_changed(path)
+            library = self.app.library
+            if self.app.view == "library" and path in library.paths:
+                library.select(path)  # show which one it was
+            name = os.path.basename(path)
+            self._status(f"Undid the mark on {name}: now {before or 'unmarked'}.")
+            return
+        self._status("No mark to undo.")
 
     # ------------------------------------------------------------ simple
     def reveal(self, path):

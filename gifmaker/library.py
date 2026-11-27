@@ -247,6 +247,10 @@ class LibraryView(ttk.Frame):
         auto.pack(side="left")
         Tooltip(auto, "While this is on, every file you click on (or arrow to) that has no "
                       "mark yet is marked as seen. Files you marked unseen stay unseen.")
+        undo = ttk.Button(bar, text="Undo mark  (Z)", command=self.app.actions.undo_mark)
+        undo.pack(side="left", padx=(8, 0))
+        Tooltip(undo, "Put back the mark the last file had before you changed it "
+                      "(press again to go further back)")
         size = ttk.Scale(bar, from_=80, to=320, length=90,
                          command=lambda v: self.browser._size_changed())
         size.pack(side="right")
@@ -584,7 +588,7 @@ class LibraryView(ttk.Frame):
             self.app.actions.mark(path, None if seen.get(path) == state else state)
 
     def _key(self, event):
-        """S / U mark the selected file; a sort key moves it to its folder."""
+        """S / U mark the selected file, Z undoes the last mark; a sort key moves it to its folder."""
         if event.state & 0x4:  # Ctrl+something: not ours
             return None
         sym = event.keysym.lower()
@@ -594,6 +598,9 @@ class LibraryView(ttk.Frame):
         key = sort_keys.key_name(event)
         if key in self.app.sort_keys:
             return self._act(lambda p: self.app.actions.move_to(p, self.app.sort_keys[key]))
+        if sym == "z" and not event.state & 0x1:  # (unless Z is a sort key)
+            self.app.actions.undo_mark()
+            return "break"
         return None
 
     def rename(self, path):
