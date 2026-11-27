@@ -10,6 +10,7 @@ from tkinter import messagebox, ttk
 from . import ffmpeg_tools as ff
 from . import theme
 from . import ui_thread
+from .loupe import Loupe, snap
 from .player import Player
 from .tooltip import Tooltip
 
@@ -133,7 +134,8 @@ class ExportDialog(tk.Toplevel):
         self.image_item = self.canvas.create_image(0, 0, anchor="nw", image=self.photo)
         self.canvas.bind("<Button-1>", self._press)
         self.canvas.bind("<B1-Motion>", self._motion)
-        self.canvas.bind("<ButtonRelease-1>", lambda e: setattr(self, "drag", None))
+        self.canvas.bind("<ButtonRelease-1>", self._release)
+        self.loupe = Loupe(self)
         self.canvas.bind("<Motion>", self._hover)
 
         self.hint = ttk.Label(main, style="Muted.TLabel")
@@ -587,31 +589,46 @@ class ExportDialog(tk.Toplevel):
             return "move", (px - x0, py - y0)
         return "new", (px, py)
 
-    def _press(self, event):
-        if self.showing_result:
-            return
+    def _pointer(self, event):
+        """The pointer kept on the frame, and pulled onto its edges when near them."""
         bx, by, bw, bh = self.box
         px = min(max(event.x, bx), bx + bw)
         py = min(max(event.y, by), by + bh)
-        self.drag = self._hit(px, py)
+        return snap(px, (bx, bx + bw)), snap(py, (by, by + bh))
+
+    def _press(self, event):
+        if self.showing_result:
+            return
+        self.drag = self._hit(*self._pointer(event))
+
+    def _release(self, _event):
+        self.drag = None
+        self.loupe.hide()
 
     def _motion(self, event):
         if not self.drag:
             return
         mode, data = self.drag
         bx, by, bw, bh = self.box
-        px = min(max(event.x, bx), bx + bw)
-        py = min(max(event.y, by), by + bh)
+        px, py = self._pointer(event)
         if mode == "move":
+            px, py = min(max(event.x, bx), bx + bw), min(max(event.y, by), by + bh)
             x0, y0, x1, y1 = self._crop_px()
             w, h = x1 - x0, y1 - y0
             nx = min(max(px - data[0], bx), bx + bw - w)
             ny = min(max(py - data[1], by), by + bh - h)
+            nx = snap(nx, (bx, bx + bw - w))  # either side of the box onto the edge
+            ny = snap(ny, (by, by + bh - h))
             self.crop[0], self.crop[1] = (nx - bx) / bw, (ny - by) / bh
         else:
             self._resize(data, px, py)
         self._leave_result()
         self._draw_crop()
+        if mode == "move":  # magnify the corner nearest the pointer
+            x0, y0, x1, y1 = self._crop_px()
+            px = x0 if abs(px - x0) < abs(px - x1) else x1
+            py = y0 if abs(py - y0) < abs(py - y1) else y1
+        self.loupe.show_canvas(self.canvas, self.image_item, px, py)
 
     def _resize(self, anchor, px, py):
         """Make the crop the box between anchor and the pointer (keeping the shape)."""

@@ -2080,7 +2080,7 @@ class GifMakerApp:
             return
         self.stop_slideshow()
         size = pe.edited_size(self.video_width, self.video_height, self.pic_edit, crop=False)
-        self.crop_box = pe.CropBox(self.canvas, self.pic_edit["crop"], size)
+        self.crop_box = pe.CropBox(self.canvas, self.pic_edit["crop"], size, self.canvas_img)
         self.crop_box.set_aspect(self.crop_aspect.get())
         self.pic_tools.pack_forget()
         self.crop_tools.pack(side="left", before=self.pic_label)

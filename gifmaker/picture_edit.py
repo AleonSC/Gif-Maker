@@ -6,6 +6,7 @@ ffmpeg_tools.transform_filters() and the Save copy window use.
 """
 
 from .export_dialog import ASPECTS, FULL, HANDLE, MIN_CROP_PX
+from .loupe import Loupe, snap
 
 NO_EDIT = {"rotate": 0, "flip": False, "crop": FULL}
 
@@ -57,8 +58,10 @@ class CropBox:
     picture is on the canvas. crop is (x, y, w, h) fractions of the picture.
     """
 
-    def __init__(self, canvas, crop, size):
+    def __init__(self, canvas, crop, size, image_item=None):
         self.canvas = canvas
+        self.image_item = image_item  # the picture, for the magnifier
+        self.loupe = Loupe(canvas) if image_item is not None else None
         self.crop = list(crop)
         self.size = size
         self.box = None  # (x, y, w, h) of the picture on the canvas
@@ -126,6 +129,8 @@ class CropBox:
 
     def clear(self):
         self.canvas.delete("cropbox")
+        if self.loupe:
+            self.loupe.destroy()
 
     # ------------------------------------------------------------- mouse
     def _hit(self, px, py):
@@ -139,8 +144,10 @@ class CropBox:
         return "new", (px, py)
 
     def _clamp(self, event):
+        """The pointer kept on the picture, and pulled onto its edges when near them."""
         bx, by, bw, bh = self.box
-        return min(max(event.x, bx), bx + bw), min(max(event.y, by), by + bh)
+        x, y = min(max(event.x, bx), bx + bw), min(max(event.y, by), by + bh)
+        return snap(x, (bx, bx + bw)), snap(y, (by, by + bh))
 
     def cursor(self, event):
         if not self.box or self.drag:
@@ -161,15 +168,26 @@ class CropBox:
         if mode == "move":
             x0, y0, x1, y1 = self._px()
             w, h = x1 - x0, y1 - y0
+            px, py = min(max(event.x, bx), bx + bw), min(max(event.y, by), by + bh)
             nx = min(max(px - data[0], bx), bx + bw - w)
             ny = min(max(py - data[1], by), by + bh - h)
+            nx = snap(nx, (bx, bx + bw - w))  # either side of the box onto the edge
+            ny = snap(ny, (by, by + bh - h))
             self.crop[0], self.crop[1] = (nx - bx) / bw, (ny - by) / bh
         else:
             self._resize(data, px, py)
         self.draw()
+        if self.loupe:
+            if mode == "move":  # the corner nearest the pointer
+                x0, y0, x1, y1 = self._px()
+                px = x0 if abs(px - x0) < abs(px - x1) else x1
+                py = y0 if abs(py - y0) < abs(py - y1) else y1
+            self.loupe.show_canvas(self.canvas, self.image_item, px, py)
 
     def release(self, _event):
         self.drag = None
+        if self.loupe:
+            self.loupe.hide()
 
     def _resize(self, anchor, px, py):
         """Make the crop the box between anchor and the pointer (keeping the shape)."""
