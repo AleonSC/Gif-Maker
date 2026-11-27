@@ -12,6 +12,7 @@ import threading
 
 SEEN, UNSEEN = "seen", "unseen"
 COLORS = {SEEN: "#2ea44f", UNSEEN: "#d73a3a"}
+DARKER = {SEEN: "#1a7f37", UNSEEN: "#b42323"}  # for text on light backgrounds
 
 _marks = None  # {normcased path: [state, size, mtime_ns]}
 _by_stamp = None  # {(size, mtime_ns): normcased path}
@@ -19,9 +20,9 @@ _lock = threading.RLock()  # renames can happen on a background thread
 
 
 def _locked(fn):
-    def wrapper(*args):
+    def wrapper(*args, **kwargs):
         with _lock:
-            return fn(*args)
+            return fn(*args, **kwargs)
     wrapper.__doc__ = fn.__doc__
     return wrapper
 
@@ -72,14 +73,17 @@ def _save():
 
 
 @_locked
-def get(path):
-    """SEEN, UNSEEN or None."""
+def get(path, look_further=True):
+    """SEEN, UNSEEN or None. look_further=False skips looking for a file moved
+    outside GifMaker (which reads the file's size and date: slow for thousands)."""
     _load()
     if not _marks:
         return None
     record = _marks.get(_key(path))
     if record:
         return record[0]
+    if not look_further:
+        return None
     stamp = _stamp(path)
     old = _by_stamp.get(stamp) if stamp else None
     if old and old in _marks:

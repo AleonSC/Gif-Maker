@@ -37,6 +37,8 @@ from .screen_recorder import RecorderWindow, cursor_monitor, default_folder, tak
 from .sequence_editor import SequenceEditor
 from .player import Player
 from .quick_look import QuickLook
+from .library import LibraryView
+from .file_actions import FileActions
 from .timeline import Timeline
 from .tooltip import Tooltip
 from .version import __version__
@@ -164,6 +166,8 @@ class GifMakerApp:
         self.volume = tk.DoubleVar(value=100)
         self.boost = tk.DoubleVar(value=100)  # percent; not saved, so it never starts loud
         self.status = tk.StringVar()  # results and problems; empty otherwise
+        self.view = "editor"  # or "library": which of the two screens is showing
+        self.actions = FileActions(self)  # delete, move, rename... for any file
 
         self._build_ui()
         self._sections_changed()
@@ -255,12 +259,14 @@ class GifMakerApp:
         self.open_saved(path)
         self.status.set(f"Recorded {os.path.basename(path)}{note}.")
 
-    def open_rename_tool(self):
-        """Open the folder renaming tool (on the current video's folder), or bring it forward."""
+    def open_rename_tool(self, folder=None):
+        """Open the folder renaming tool (on folder, else the current video's), or bring
+        it forward."""
         if self.rename_window is not None:
             self.rename_window.lift()
             return
-        folder = os.path.dirname(os.path.abspath(self.video_path)) if self.video_path else None
+        if folder is None and self.video_path:
+            folder = os.path.dirname(os.path.abspath(self.video_path))
         self.rename_window = RenameTool(self, VIDEO_EXTENSIONS, folder)
 
     def release_folder(self, folder):
@@ -293,7 +299,7 @@ class GifMakerApp:
             new = mapping.get(os.path.normcase(os.path.abspath(path)), path)
             if not os.path.exists(new):
                 return
-            self.open_video(new)
+            self.open_video(new, show=False)  # (staying in the library if that's showing)
             if self.video_path == new:  # put the work back as it was
                 self.sections = sections
                 self._sections_changed()
@@ -508,11 +514,10 @@ class GifMakerApp:
         # Toolbar: the file on the left, the other tools on the right.
         top = ttk.Frame(main)
         for text, command, tip in (
+                ("‹ Library", self.show_library,
+                 "Back to the folder's files, with the tools  (Esc)"),
                 ("Open...", self.open_video, "Open a video  (Ctrl+O, or drag one onto the window)"),
-                ("Open link...", self.open_link,
-                 "Download a video from YouTube or another site and open it  (Ctrl+L, or paste "
-                 "or drag a link onto the window)"),
-                ("Close", self.close_file, "Close the video and start again"),
+                ("Close", self.close_file, "Close the file and go back to the library"),
                 ("Delete...", self.delete_file,
                  "Delete this video and open the next one in the folder  (Delete key)"),
                 ("Show in folder", self.reveal_current,
@@ -527,22 +532,6 @@ class GifMakerApp:
         ttk.Checkbutton(top, text="Dark", variable=self.dark_mode,
                         command=self._toggle_dark).pack(side="right")
         ttk.Separator(top, orient="vertical").pack(side="right", fill="y", padx=10, pady=3)
-        record = ttk.Button(top, text="Record screen", command=self.open_recorder)
-        record.pack(side="right", padx=(0, 4))
-        Tooltip(record, "Record the screen (or part of it), with the computer's sound, "
-                        "then open the video here to make GIFs from it")
-        edit = ttk.Button(top, text="Timeline edit", command=self.open_sequence)
-        edit.pack(side="right", padx=(0, 4))
-        Tooltip(edit, "Join parts of several videos and pictures, one after another, "
-                      "into one video")
-        grid = ttk.Button(top, text="Grid player", command=self.open_grid)
-        grid.pack(side="right")
-        Tooltip(grid, "Play several videos (and show pictures) at once, each in a panel you can "
-                      "move, resize and loop")
-        rename = ttk.Button(top, text="Rename files", command=self.open_rename_tool)
-        rename.pack(side="right", padx=(0, 4))
-        Tooltip(rename, "Rename everything in a folder with a numbered pattern, "
-                        "in name, date, size or colour order")
         one = ttk.Checkbutton(top, text="One window", variable=self.one_window)
         one.pack(side="right", padx=(0, 12))
         Tooltip(one, "Videos you open from Explorer play in this window, "
@@ -777,32 +766,34 @@ class GifMakerApp:
         self._windowed_only = [top, edit, pic, statusbar]
         self._rows = [(w, w.pack_info()) for w in main.pack_slaves()]
 
-        self.root.bind("<space>", lambda e: self._key_set(e, self.toggle_play))
-        self.root.bind("<Left>", lambda e: self._key_file(e, -1))
-        self.root.bind("<Right>", lambda e: self._key_file(e, 1))
-        self.root.bind("<Shift-Left>", lambda e: self._key_step(e, "-f"))
-        self.root.bind("<Shift-Right>", lambda e: self._key_step(e, "+f"))
-        self.root.bind("<bracketleft>", lambda e: self._key_set(e, self.set_start))
-        self.root.bind("<bracketright>", lambda e: self._key_set(e, self.set_end))
-        self.root.bind("<Prior>", lambda e: self._key_set(e, lambda: self.open_neighbour(-1)))
-        self.root.bind("<Next>", lambda e: self._key_set(e, lambda: self.open_neighbour(1)))
-        self.root.bind("<Delete>", lambda e: self._key_set(e, self.delete_file))
+        self._bind_editor("<space>", lambda e: self._key_set(e, self.toggle_play))
+        self._bind_editor("<Left>", lambda e: self._key_file(e, -1))
+        self._bind_editor("<Right>", lambda e: self._key_file(e, 1))
+        self._bind_editor("<Shift-Left>", lambda e: self._key_step(e, "-f"))
+        self._bind_editor("<Shift-Right>", lambda e: self._key_step(e, "+f"))
+        self._bind_editor("<bracketleft>", lambda e: self._key_set(e, self.set_start))
+        self._bind_editor("<bracketright>", lambda e: self._key_set(e, self.set_end))
+        self._bind_editor("<Prior>", lambda e: self._key_set(e, lambda: self.open_neighbour(-1)))
+        self._bind_editor("<Next>", lambda e: self._key_set(e, lambda: self.open_neighbour(1)))
+        self._bind_editor("<Delete>", lambda e: self._key_set(e, self.delete_file))
         self.root.bind("<Control-o>", lambda e: self.open_video())
         self.root.bind("<Control-l>", lambda e: self.open_link())
         self.root.bind("<Control-v>", self._paste_link)
-        self.root.bind("<F2>", lambda e: self.start_rename())
-        self.root.bind("<F11>", self.toggle_fullscreen)
-        self.root.bind("<F3>", lambda e: self.toggle_files())
+        self._bind_editor("<F2>", lambda e: self.start_rename())
+        self._bind_editor("<F11>", self.toggle_fullscreen)
+        self._bind_editor("<F3>", lambda e: self.toggle_files())
         self.root.bind("<Escape>", self._escape)
-        self.root.bind("<F5>", lambda e: self.toggle_slideshow())
-        self.root.bind("<Key>", self._key_sort)  # the sort keys (more specific keys win)
-        self.root.bind("<Control-z>", lambda e: self._key_set(e, self.undo_sort))
-        self.root.bind("<Control-e>", lambda e: self.reveal_current())
-        self.root.bind("<Control-r>", lambda e: self._key_set(e, lambda: self.rotate_picture(90)))
-        self.root.bind("<Control-R>", lambda e: self._key_set(e, lambda: self.rotate_picture(-90)))
-        self.root.bind("<Control-s>", lambda e: self._key_set(e, self.apply_picture_edits))
-        self.root.bind("<Return>", lambda e: self._key_set(e, self.finish_crop)
+        self._bind_editor("<F5>", lambda e: self.toggle_slideshow())
+        self._bind_editor("<Key>", self._key_sort)  # the sort keys (more specific keys win)
+        self._bind_editor("<Control-z>", lambda e: self._key_set(e, self.undo_sort))
+        self._bind_editor("<Control-e>", lambda e: self.reveal_current())
+        self._bind_editor("<Control-r>", lambda e: self._key_set(e, lambda: self.rotate_picture(90)))
+        self._bind_editor("<Control-R>", lambda e: self._key_set(e, lambda: self.rotate_picture(-90)))
+        self._bind_editor("<Control-s>", lambda e: self._key_set(e, self.apply_picture_edits))
+        self._bind_editor("<Return>", lambda e: self._key_set(e, self.finish_crop)
                        if self.crop_box else None)
+        # The library: the home screen, shown instead of all the above.
+        self.library = LibraryView(self.root, self)
         self._update_nav()
         # Let the window be shrunk until the video is small, but no narrower than
         # the play bar (and keep its size from now on, whatever the labels say).
@@ -810,6 +801,62 @@ class GifMakerApp:
         req_h = main.winfo_reqheight() - PREVIEW_H + MIN_VIEW_H
         self.root.minsize(bar.winfo_reqwidth() + 20, req_h)
         self.root.geometry(f"{self.root.winfo_reqwidth()}x{self.root.winfo_reqheight()}")
+
+    def _bind_editor(self, sequence, fn):
+        """A key for the editor only: in the library it does nothing here (the library
+        handles its own keys)."""
+        self.root.bind(sequence, lambda e: fn(e) if self.view == "editor" else None)
+
+    # ------------------------------------------------- library and editor
+    def show_library(self, folder=None):
+        """Switch to the library (on the open file's folder, with it selected)."""
+        if self.view == "library":
+            return
+        if self.fullscreen:
+            self.toggle_fullscreen()
+        self.stop_slideshow()
+        self.stop_playback()
+        self._remember_files_width()
+        self.view = "library"
+        self.main.pack_forget()
+        self.library.pack(fill="both", expand=True)
+        current = self.video_path if self.video_path and os.path.exists(self.video_path) else None
+        if folder is None and current:
+            folder = os.path.dirname(os.path.abspath(current))
+        self.library.shown(folder, select=current)
+
+    def show_editor(self):
+        if self.view == "editor":
+            return
+        self.view = "editor"
+        self.library.hidden()
+        self.library.pack_forget()
+        self.main.pack(fill="both", expand=True)
+
+    def let_go(self, path):
+        """Stop everything reading path, which is about to be moved, renamed or deleted.
+        Returns a function to call afterwards with {old path (normcased): new path}."""
+        self.library.release(path)
+        key = os.path.normcase(os.path.abspath(path))
+        return self._release(lambda p: os.path.normcase(os.path.abspath(p)) == key)
+
+    def files_changed(self):
+        """Files were moved, renamed, copied or deleted: list the folders again."""
+        self.listing = None
+        self._update_nav()
+        if self.rename_window is not None:
+            try:
+                self.rename_window.reload()
+            except Exception:  # noqa: BLE001 - the rename tool refreshing is a nicety
+                pass
+        if self.view == "library":
+            self.library.reload()
+
+    def marks_changed(self, path):
+        """path was marked seen / unseen (or the mark cleared)."""
+        self.browser.redraw(path)
+        if self.view == "library":
+            self.library.mark_changed(path)
 
     def _show_time(self, t):
         self.pos_label.config(text=f"{ff.format_time(t)} / {ff.format_time(self.duration)}")
@@ -846,7 +893,12 @@ class GifMakerApp:
         if downloader.looks_like_link(text):  # a link dragged from a browser
             self.root.after(10, lambda: self.open_link(text.split()[0]))
             return COPY
-        files = [f for f in self.root.tk.splitlist(event.data) if os.path.isfile(f)]
+        dropped = self.root.tk.splitlist(event.data)
+        files = [f for f in dropped if os.path.isfile(f)]
+        folders = [f for f in dropped if os.path.isdir(f)]
+        if not files and folders and not self.busy:  # a folder: show it in the library
+            self.root.after(10, lambda: self._show_dropped_folder(folders[0]))
+            return COPY
         if not files:
             return event.action
         if self.busy:
@@ -855,6 +907,12 @@ class GifMakerApp:
             # Open after the drop completes so Explorer isn't left waiting on dialogs.
             self.root.after(10, lambda: self.open_video(files[0]))
         return COPY
+
+    def _show_dropped_folder(self, folder):
+        if self.view == "library":
+            self.library.set_folder(folder)
+        else:
+            self.show_library(folder)
 
     # ------------------------------------------------------------- links
     def open_link(self, url=""):
@@ -890,7 +948,9 @@ class GifMakerApp:
             self.open_link(text)
 
     # ----------------------------------------------------------- loading
-    def open_video(self, path=None):
+    def open_video(self, path=None, show=True):
+        """Open path (or ask for a file) in the editor; show=False stays in the library
+        if that's showing."""
         if self.busy:
             return
         self.stop_playback()
@@ -911,6 +971,8 @@ class GifMakerApp:
         except Exception as e:
             messagebox.showerror("Could not open video", str(e))
             return
+        if show:
+            self.show_editor()
         self.video_path = path
         self.pic_edit = dict(pe.NO_EDIT)
         if self.crop_box:
@@ -1116,8 +1178,14 @@ class GifMakerApp:
             self.slide_job = self.root.after(500, self._slide_next)
 
     def _escape(self, _event=None):
+        if self.view != "editor":
+            return
         if self.crop_box:
             self.cancel_crop()
+            return
+        if not self.slideshow and not self.fullscreen and \
+                not isinstance(_event and _event.widget, _TYPING_WIDGETS):
+            self.show_library()  # nothing else to step out of: back to the library
             return
         if self.slideshow:
             self.stop_slideshow()
@@ -1493,9 +1561,14 @@ class GifMakerApp:
         return self._region()[1]
 
     def close_file(self):
-        """The Close button: stop any slideshow, then close the file."""
+        """The Close button: stop any slideshow, close the file, back to the library."""
         self.stop_slideshow()
+        folder = os.path.dirname(os.path.abspath(self.video_path)) if self.video_path else None
+        if self.busy:
+            self.clear_video()  # (says to wait)
+            return
         self.clear_video()
+        self.show_library(folder)
 
     def clear_video(self):
         """Close the current video and put the window back as it was at startup."""
@@ -1576,6 +1649,8 @@ class GifMakerApp:
 
     def _sort_keys_changed(self, keys):
         self.sort_keys = keys
+        self.library._fill_sidebar()
+        self.library._fill_actions()
 
     def _key_sort(self, event):
         if isinstance(event.widget, _TYPING_WIDGETS):
@@ -2594,6 +2669,8 @@ def main():
     app = GifMakerApp(root, ffmpeg)
     if video:
         root.after(100, lambda: app.open_video(video))
+    else:
+        app.show_library()  # start on the library
     root.mainloop()
     app.player.close()
     _exit_promptly()

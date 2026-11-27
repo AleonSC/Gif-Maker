@@ -2,6 +2,16 @@
 
 A small Windows desktop app for turning a section of a video into a GIF.
 
+**The library** is the home screen: the videos and pictures in a folder as a grid. Filter
+them by **Unseen / Seen / Unmarked** and **Videos / Pictures**, search by name, and sort by
+name, date or size. Click a file to see it (videos play silently) with its actions beside
+it; double-click or Enter opens it in the editor, and **‹ Library** (or Esc) comes back.
+Arrow keys move through the files, **S** / **U** mark them seen or unseen (in the Unseen
+list, marking one moves on to the next), a sort key moves the file to its folder (Ctrl+Z
+puts it back), F2 renames and Del deletes. On the left: **Recent folders** (or drag a folder
+onto the window), **Sort into** (your sort-key folders) and **Tools**: Download link, Record
+screen, Slideshow, Grid player, Timeline edit and Rename files.
+
 1. **Open...** (Ctrl+O; mp4, mkv, mov, avi, webm, ...), drag a video from Explorer into the
    window, or drop one onto `GifMaker.exe`.
 2. Press **Play** (or the spacebar) to watch it with sound (untick **Sound** to mute; tick
