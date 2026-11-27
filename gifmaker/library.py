@@ -160,6 +160,9 @@ class LibraryView(ttk.Frame):
         self.kind_filter = tk.StringVar(value="all")
         self.sort = tk.StringVar(value=theme.load_setting("library_sort", SORTS[0]))
         self.search = tk.StringVar()
+        self.auto_seen = tk.BooleanVar(value=bool(theme.load_setting("library_auto_seen", False)))
+        self.auto_seen.trace_add("write", lambda *_: theme.save_setting(
+            "library_auto_seen", self.auto_seen.get()))
         self.search_job = None
         self.small = font.nametofont("TkDefaultFont").copy()
         self.small.configure(size=max(7, self.small.cget("size") - 1), weight="bold")
@@ -238,6 +241,12 @@ class LibraryView(ttk.Frame):
                             ("pictures", "Pictures")):
             ttk.Radiobutton(bar, text=text, value=value, variable=self.kind_filter,
                             style="Toolbutton").pack(side="left", padx=(0, 2))
+        ttk.Frame(bar, width=14).pack(side="left")
+        auto = ttk.Checkbutton(bar, text="Mark seen on click", variable=self.auto_seen,
+                               style="Toolbutton")
+        auto.pack(side="left")
+        Tooltip(auto, "While this is on, every file you click on (or arrow to) that has no "
+                      "mark yet is marked as seen. Files you marked unseen stay unseen.")
         size = ttk.Scale(bar, from_=80, to=320, length=90,
                          command=lambda v: self.browser._size_changed())
         size.pack(side="right")
@@ -247,7 +256,7 @@ class LibraryView(ttk.Frame):
                      width=13).pack(side="right")
         ttk.Label(bar, text="Sort").pack(side="right", padx=(0, 4))
 
-        self.browser = FileBrowser(main, self.app.ffmpeg, self.select, None,
+        self.browser = FileBrowser(main, self.app.ffmpeg, self._picked, None,
                                    on_look=self.app._quick_look, on_activate=self.open_in_editor,
                                    head=False, empty_text="No videos or pictures here")
         self.browser.pack(fill="both", expand=True)
@@ -529,6 +538,12 @@ class LibraryView(ttk.Frame):
         self.select(pick)
 
     # --------------------------------------------------------- selection
+    def _picked(self, path):
+        """A file was clicked (or arrowed to): select it, and mark it seen if asked to."""
+        self.select(path)
+        if self.auto_seen.get() and path and seen.get(path) is None:
+            self.app.actions.mark(path, seen.SEEN)
+
     def select(self, path):
         self.browser.show(self.paths, path)
         if path == self.selected and self.preview.path == path:
