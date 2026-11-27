@@ -6,6 +6,8 @@ import re
 import sys
 import uuid
 
+from . import seen
+
 
 def where_it_goes():
     """A sentence saying where a deleted file ends up, for messages."""
@@ -21,6 +23,7 @@ def send_to_trash(path):
     """
     if sys.platform != "win32":
         os.remove(path)
+        seen.forget(path)
         return
     import ctypes
     from ctypes import wintypes
@@ -46,6 +49,7 @@ def send_to_trash(path):
     result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
     if result != 0 or op.fAnyOperationsAborted or os.path.exists(path):
         raise OSError(f"Windows couldn't move it to the Recycle Bin (code {result}).")
+    seen.forget(path)
 
 
 def free_name(folder, name):
@@ -69,6 +73,7 @@ def move_file(src, dst, tries=20, wait=0.15):
             if os.path.lexists(dst):
                 raise FileExistsError(f"{os.path.basename(dst)} is already there.")
             os.rename(src, dst)
+            seen.moved(src, dst)
             return
         except PermissionError:
             if attempt == tries - 1:
@@ -82,6 +87,7 @@ def move_file(src, dst, tries=20, wait=0.15):
     for attempt in range(tries):
         try:
             os.remove(src)
+            seen.moved(src, dst)
             return
         except OSError:
             if attempt == tries - 1:
@@ -267,6 +273,8 @@ def rename_all(folder, plan, on_progress=None):
         name = os.path.basename(getattr(e, "filename", None) or "")
         detail = f" ({originals.get(name, name)})" if name else ""
         raise OSError(f"{e.strerror or e}{detail}. Nothing was renamed.") from e
+    # seen / unseen marks go with the files
+    seen.moved_all([(os.path.join(folder, old), os.path.join(folder, new)) for old, new in plan])
     return plan
 
 

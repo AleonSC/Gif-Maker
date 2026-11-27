@@ -17,6 +17,7 @@ import tkinter as tk
 from tkinter import font, ttk
 
 from . import ffmpeg_tools as ff
+from . import seen
 from . import theme
 from . import ui_thread
 from .tooltip import Tooltip
@@ -153,6 +154,14 @@ class FileBrowser(ttk.Frame):
         else:
             self._mark_current()
         self._scroll_to_current()
+
+    def redraw(self, path):
+        """Draw path's cell again (e.g. its seen / unseen mark changed)."""
+        i = self.index.get(path)
+        if i is not None and i in self.drawn:
+            self.canvas.delete(f"i{i}")
+            self._draw_cell(i)
+            self._mark_current()
 
     def refresh(self, path):
         """Make path's thumbnail again (the file has changed)."""
@@ -330,8 +339,16 @@ class FileBrowser(ttk.Frame):
         _, _, w, h, _ = self.grid
         tag = f"i{i}"
         c.create_rectangle(x, y, x + w, y + h, fill=colors["lane"], width=0, tags=(tag, "box"))
-        c.create_text(x + w // 2, y + h + 3, text=self._fit_name(os.path.basename(path), w),
-                      anchor="n", font=self.name_font, fill=colors["fg"], tags=(tag, "name"))
+        mark = seen.COLORS.get(seen.get(path))
+        name = c.create_text(x + w // 2, y + h + 3, text=self._fit_name(os.path.basename(path), w),
+                             anchor="n", font=self.name_font,
+                             fill="white" if mark else colors["fg"], tags=(tag, "name"))
+        if mark:  # seen (green) / unseen (red): a frame round it and behind its name
+            nx0, ny0, nx1, ny1 = c.bbox(name)
+            c.create_rectangle(x, ny0 - 1, x + w, ny1, fill=mark, width=0, tags=(tag, "mark"))
+            c.tag_raise(name)
+            c.create_rectangle(x + 1.5, y + 1.5, x + w - 1.5, y + h - 1.5, outline=mark,
+                               width=3, tags=(tag, "mark", "frame"))
         if path not in self.images:  # a quick version from memory, if it's there
             png = self.pngs.get(_key(path))
             if png:
@@ -351,6 +368,7 @@ class FileBrowser(ttk.Frame):
         self.canvas.delete(f"i{i}&&img")
         self.canvas.create_image(x + w // 2, y + h // 2, image=self.images[path],
                                  tags=(f"i{i}", "img"))
+        self.canvas.tag_raise(f"i{i}&&frame")  # the seen / unseen frame over the picture
         self.images.move_to_end(path)
 
     def _fit_name(self, name, width):
